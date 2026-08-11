@@ -40,11 +40,17 @@ npm run dev
 
 ## 文档
 
-- [零基础维护手册](origin%20resource/docs/01-零基础维护手册.md)
-- [架构与数据流](origin%20resource/docs/02-架构与数据流.md)
-- [常见修改操作](origin%20resource/docs/03-常见修改操作.md)
-- [接口与数据字典](origin%20resource/docs/04-接口与数据字典.md)
-- [故障排查](origin%20resource/docs/05-故障排查.md)
+想改代码的话，**先读 [AI 上手索引](origin%20resource/docs/00-AI-上手索引.md)**：里面有任务路由表，按你要做的事直接告诉你该看哪几个文件，不用把整个仓库读一遍。
+
+- [00 AI 上手索引](origin%20resource/docs/00-AI-上手索引.md) — 入口、任务路由表、易踩的坑
+- [01 零基础维护手册](origin%20resource/docs/01-零基础维护手册.md) — 概念扫盲与目录全景
+- [02 架构与数据流](origin%20resource/docs/02-架构与数据流.md) — 分层、发消息全流程、SSE 协议、消息树
+- [03 常见修改操作](origin%20resource/docs/03-常见修改操作.md) — 加设置项、加接口、加字段的固定步骤
+- [04 接口与数据字典](origin%20resource/docs/04-接口与数据字典.md) — 全部 API 与主要字段
+- [05 故障排查](origin%20resource/docs/05-故障排查.md) — 报错与功能不生效
+- [06 文件地图](origin%20resource/docs/06-文件地图.md) — 每个文件的作用与关键函数位置
+- [07 桌面端与打包](origin%20resource/docs/07-桌面端与打包.md) — Electron、IPC、多 API 切换、打包
+- [08 变更记录](origin%20resource/docs/08-变更记录.md) — 历史改动与文档维护规范
 
 ## 许可证
 
