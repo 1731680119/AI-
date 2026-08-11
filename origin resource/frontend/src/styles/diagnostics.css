@@ -1,0 +1,221 @@
+/* ============ 诊断面板 ============ */
+/* 复用主题变量，配色与其余界面保持一致。 */
+
+.diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.diag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.diag-actions .btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.diag-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  color: var(--danger);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.diag-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.diag-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.diag-filters .btn-ghost,
+.diag-filters .btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.diag-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 10px;
+  color: var(--text-muted);
+}
+
+.diag-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 8px 0;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.diag-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.diag-chip {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.diag-chip:hover { background: var(--bg-hover); }
+
+.diag-chip.on {
+  background: var(--bg-active);
+  border-color: var(--border-strong);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.diag-chip-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+.diag-notice {
+  background: var(--bg-user-bubble);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.diag-log {
+  height: 320px;
+  overflow: auto;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.diag-empty {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 28px 0;
+  font-family: inherit;
+}
+
+.diag-line {
+  border-radius: 6px;
+  border-left: 2px solid transparent;
+}
+
+.diag-line:hover { background: var(--bg-hover); }
+
+.diag-line-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+
+.diag-ts { color: var(--text-muted); flex-shrink: 0; }
+
+.diag-level {
+  flex-shrink: 0;
+  width: 62px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.diag-logger {
+  flex-shrink: 0;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.diag-msg {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.diag-trace {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.diag-detail {
+  margin: 0 6px 6px 76px;
+  padding: 8px 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
+  max-height: 260px;
+  overflow: auto;
+}
+
+/* 级别配色：只给需要注意的级别上色，避免整片日志花掉。 */
+.diag-line.level-warning { border-left-color: var(--accent); }
+.diag-line.level-warning .diag-level { color: var(--accent); }
+.diag-line.level-error,
+.diag-line.level-critical { border-left-color: var(--danger); }
+.diag-line.level-error .diag-level,
+.diag-line.level-critical .diag-level { color: var(--danger); }
+.diag-line.level-critical .diag-msg { font-weight: 600; }
+.diag-line.level-debug .diag-msg { color: var(--text-secondary); }
+
+.diag-chip.level-warning.on { color: var(--accent); border-color: var(--accent); }
+.diag-chip.level-error.on,
+.diag-chip.level-critical.on { color: var(--danger); border-color: var(--danger); }

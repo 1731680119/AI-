@@ -1,0 +1,65 @@
+{
+  "name": "ai-chatbot-desktop",
+  "version": "1.2.3",
+  "private": true,
+  "description": "AI Chatbot Windows 桌面版",
+  "author": "AI Chatbot",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "37.10.3",
+    "electron-builder": "26.0.12"
+  },
+  "build": {
+    "electronDist": "electron-dist",
+    "appId": "com.ai-chatbot.desktop",
+    "productName": "AI Chatbot",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "frontend",
+        "to": "frontend"
+      },
+      {
+        "from": "backend",
+        "to": "backend"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "desktop/assets/icon.ico",
+      "artifactName": "AI-Chatbot-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "guid": "d742904d-d6f5-5187-abfe-240ebb43a88f",
+      "include": "desktop/installer.nsh",
+      "deleteAppDataOnUninstall": false,
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AI Chatbot"
+    }
+  },
+  "allowScripts": {
+    "electron@37.10.3": true
+  }
+}

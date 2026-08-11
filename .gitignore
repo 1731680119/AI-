@@ -1,0 +1,39 @@
+# 本地密钥
+.env
+*.env.local
+
+# 依赖
+node_modules/
+
+# 前端构建产物
+origin resource/frontend/dist/
+origin resource/frontend/tsconfig.tsbuildinfo
+source/frontend/
+
+# Python 虚拟环境与缓存
+.venv/
+.buildvenv/
+**/__pycache__/
+*.py[cod]
+
+# PyInstaller 打包产物
+origin resource/backend/build/
+origin resource/backend/dist/
+source/backend/
+pyi.log
+builder.log
+
+# Electron 运行时与安装包输出
+source/electron-dist/
+source/release/
+
+# 用户运行数据（聊天记录、上传文件、生成的图片）
+origin resource/backend/data/
+source/LocalLow/
+
+# 编辑器与系统临时文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

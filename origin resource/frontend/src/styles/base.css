@@ -1,0 +1,104 @@
+/* ============ 主题变量 ============ */
+:root {
+  --bg: #faf9f5;
+  --bg-panel: #ffffff;
+  --bg-sidebar: #f5f4ee;
+  --bg-hover: #eceae2;
+  --bg-active: #e8e6dc;
+  --bg-input: #ffffff;
+  --bg-user-bubble: #f0eee6;
+  --bg-code: #f6f5f0;
+  --text: #3d3929;
+  --text-secondary: #6e6a56;
+  --text-muted: #a3a094;
+  --border: #e5e3d9;
+  --border-strong: #d5d3c8;
+  --accent: #d97757;
+  --accent-hover: #c96442;
+  --accent-fg: #ffffff;
+  --danger: #c0392b;
+  --shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  --radius: 12px;
+}
+
+[data-theme='dark'] {
+  --bg: #262624;
+  --bg-panel: #2f2f2c;
+  --bg-sidebar: #1f1f1d;
+  --bg-hover: #3a3a36;
+  --bg-active: #454540;
+  --bg-input: #33332f;
+  --bg-user-bubble: #3a3a34;
+  --bg-code: #1e1e1c;
+  --text: #ece9df;
+  --text-secondary: #b8b5a9;
+  --text-muted: #7d7a6e;
+  --border: #43423c;
+  --border-strong: #56554d;
+  --accent: #d97757;
+  --accent-hover: #e08a6d;
+  --accent-fg: #ffffff;
+  --danger: #e74c3c;
+  --shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+input, textarea, select {
+  font-family: inherit;
+  color: inherit;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ============ 布局 ============ */
+.app {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  position: relative;
+}
+
+.content-row {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.chat-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+

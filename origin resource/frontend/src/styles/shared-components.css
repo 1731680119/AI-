@@ -1,0 +1,422 @@
+/* ============ 组件补充样式 ============ */
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+
+.welcome-logo {
+  width: 46px; height: 46px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-fg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+}
+
+.topbar-title {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  width: 80%;
+}
+.user-col .msg-actions { justify-content: flex-end; }
+
+.attach-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px 4px 8px;
+}
+.attach-list.in-msg { padding: 0 0 6px; justify-content: flex-end; }
+.attach-card { position: relative; }
+.attach-card img {
+  width: 40px; height: 40px;
+  object-fit: cover;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+}
+.attach-card .remove {
+  position: absolute;
+  top: -7px; right: -7px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  color: var(--bg-panel);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.attach-card .remove:hover { background: var(--danger); }
+
+/* 思考块（组件类名） */
+.thinking-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: left;
+}
+.thinking-toggle:hover { background: var(--bg-hover); }
+.thinking-toggle .spin, .typing-hint .spin { animation: spin 1s linear infinite; }
+.thinking-body {
+  padding: 10px 16px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+.typing-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  padding: 4px 0;
+}
+
+/* 用户消息编辑态 */
+.user-bubble.editing {
+  width: 100%;
+  max-width: 100%;
+  background: var(--bg-input);
+  border: 1.5px solid var(--accent);
+}
+.user-bubble.editing textarea {
+  width: 100%;
+  border: none;
+  background: transparent;
+  outline: none;
+  resize: vertical;
+  font-size: 15px;
+  line-height: 1.6;
+  min-height: 48px;
+}
+
+.btn-primary, .btn-ghost {
+  padding: 7px 16px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+/* 输入区工具栏（组件类名） */
+.composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+.composer-left, .composer-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.model-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.model-btn:hover { background: var(--bg-hover); }
+.model-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.model-item:hover { background: var(--bg-hover); }
+.model-item.active { color: var(--accent); font-weight: 600; }
+.model-menu { right: 0; left: auto; }
+
+/* 导出菜单挂在顶栏，向上弹会超出窗口顶部被裁掉，这里改成向下展开。 */
+.export-select .model-menu {
+  top: calc(100% + 6px);
+  bottom: auto;
+  right: 0;
+  left: auto;
+}
+
+/* 风格选择器复用模型菜单的样式，只是挂在输入框左侧。 */
+.style-select { position: relative; }
+.style-select .model-menu { left: 0; right: auto; min-width: 160px; }
+.style-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.style-btn:hover { background: var(--bg-hover); }
+
+/* Artifact 面板（组件类名） */
+.artifact-title {
+  flex: 1;
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-actions { display: flex; gap: 2px; }
+.artifact-code { min-height: 100%; }
+
+/* 设置表单（组件类名） */
+.field { margin-bottom: 16px; min-width: 0; }
+.field label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+}
+.field input:not([type='range']):not([type='radio']),
+.field textarea {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--bg-input);
+  font-size: 14px;
+  outline: none;
+  resize: vertical;
+}
+.field input:focus, .field textarea:focus { border-color: var(--accent); }
+.field input[type='range'] { width: 100%; accent-color: var(--accent); }
+.field .hint, .field + .hint { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.field-row { display: flex; gap: 14px; }
+.field-row .field { flex: 1; }
+
+.model-list-edit {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+}
+.model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  border-radius: 7px;
+}
+.model-row:hover { background: var(--bg-hover); }
+.model-row .radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.model-row .radio input { accent-color: var(--accent); }
+.model-add {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.model-add input {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-input);
+  font-size: 13px;
+  outline: none;
+}
+.model-add input:focus { border-color: var(--accent); }
+.model-add .btn-ghost { display: flex; align-items: center; gap: 4px; padding: 6px 12px; }
+
+.style-list-edit {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.style-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px 8px;
+}
+.style-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.style-name {
+  flex: 1;
+  padding: 5px 8px !important;
+  font-size: 13px !important;
+  font-weight: 500;
+}
+.style-tag {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  flex-shrink: 0;
+}
+.style-row textarea { font-size: 13px !important; }
+.style-list-edit > .btn-ghost {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 7px;
+}
+
+/* 长期记忆列表：结构上跟模型列表同一类，复用 .model-add 做底部输入行。 */
+.memory-list {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+}
+.memory-list > .model-add:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+.memory-empty {
+  padding: 8px 8px 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.memory-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 7px;
+}
+.memory-row:hover { background: var(--bg-hover); }
+.memory-text {
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.55;
+  cursor: text;
+  word-break: break-word;
+}
+.memory-edit {
+  flex: 1;
+  padding: 5px 8px !important;
+  font-size: 13px !important;
+  line-height: 1.55;
+}
+.memory-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 4px;
+}
+.memory-foot .hint { margin-top: 0; }
+.link-danger {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--danger);
+  padding: 0;
+}
+.link-danger:hover { text-decoration: underline; }
+.memory-error {
+  font-size: 12.5px;
+  color: var(--danger);
+  margin-bottom: 6px;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  background: var(--bg-code);
+  border-radius: 9px;
+  padding: 3px;
+  gap: 2px;
+}
+.theme-toggle button {
+  padding: 6px 18px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.theme-toggle button.active {
+  background: var(--bg-panel);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+/* 错误横幅（含关闭按钮） */
+.error-banner,
+.context-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  max-width: 780px;
+  width: calc(100% - 40px);
+  margin: 8px auto 0;
+}
+
+/* 渲染异常兜底页：ErrorBoundary 接住错误后替代整个界面显示 */
+.crash-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  height: 100%;
+  padding: 40px 24px;
+  background: var(--bg);
+  color: var(--text);
+  text-align: center;
+}
+
+.crash-screen h2 { font-size: 18px; font-weight: 600; margin: 0; }
+.crash-screen p { color: var(--text-secondary); font-size: 13.5px; margin: 0; }
+
+.crash-detail {
+  max-width: 560px;
+  max-height: 180px;
+  overflow: auto;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 12.5px;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.crash-actions { display: flex; gap: 10px; }
+
+/* 响应式 */
+@media (max-width: 900px) {
+  .artifact-panel { display: none; }
+  .sidebar { position: absolute; z-index: 50; height: 100%; }
+}
+

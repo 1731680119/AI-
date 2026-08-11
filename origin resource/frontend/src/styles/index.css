@@ -1,0 +1,13 @@
+/*
+ * 样式加载顺序很重要：后加载的文件可以覆盖前面的同名规则。
+ * 新功能优先创建独立样式文件，并在这里按依赖顺序引入。
+ */
+@import './base.css';
+@import './sidebar.css';
+@import './chat.css';
+@import './artifacts.css';
+@import './settings.css';
+@import './shared-components.css';
+@import './images.css';
+@import './diagnostics.css';
+

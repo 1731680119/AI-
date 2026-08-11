@@ -1,0 +1,139 @@
+/* ============ Artifacts 面板 ============ */
+.artifact-panel {
+  width: 46%;
+  min-width: 380px;
+  max-width: 720px;
+  border-left: 1px solid var(--border);
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  animation: slideIn 0.22s ease;
+}
+@keyframes slideIn {
+  from { transform: translateX(30px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.artifact-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.artifact-header .title {
+  flex: 1;
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-tabs {
+  display: flex;
+  background: var(--bg-code);
+  border-radius: 8px;
+  padding: 2px;
+}
+.artifact-tabs button {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.artifact-tabs button.active {
+  background: var(--bg-panel);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+/* 版本历史导航 */
+.artifact-versions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.artifact-versions button {
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 5px;
+  color: var(--text-secondary);
+}
+.artifact-versions button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.artifact-versions button:disabled { opacity: 0.35; cursor: default; }
+.artifact-version-label {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  text-align: center;
+}
+/* 停在旧版时给一条提示，免得以为模型没改 */
+.artifact-oldver {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  background: var(--bg-code);
+  border-bottom: 1px solid var(--border);
+}
+.artifact-oldver button {
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.artifact-oldver button:hover { text-decoration: underline; }
+
+.artifact-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+.artifact-body iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
+}
+.artifact-body pre { margin: 0 !important; font-size: 13px !important; min-height: 100%; }
+
+/* Artifact 卡片（消息内） */
+.artifact-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 0.8em 0;
+  cursor: pointer;
+  background: var(--bg-panel);
+  transition: border-color 0.15s, background 0.15s;
+  max-width: 440px;
+}
+.artifact-card:hover { border-color: var(--accent); background: var(--bg-hover); }
+.artifact-card .icon {
+  width: 36px; height: 36px;
+  border-radius: 9px;
+  background: var(--bg-code);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.artifact-card .info { flex: 1; min-width: 0; }
+.artifact-card .name {
+  font-weight: 600;
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-card .desc { font-size: 12px; color: var(--text-muted); }
+
