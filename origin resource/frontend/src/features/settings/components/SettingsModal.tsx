@@ -1,12 +1,34 @@
 import { useEffect, useState } from 'react'
 import {
-  Activity, Brain, Globe, Image, LayoutTemplate, MessageSquare,
-  Paperclip, Palette, Plus, Server, Trash2, X,
+  Activity, AlertTriangle, Brain, CheckCircle2, Globe, Image, LayoutTemplate, ListChecks, Loader2,
+  MessageSquare, Paperclip, Palette, Plus, Server, Trash2, X, XCircle,
 } from 'lucide-react'
 import { useStore } from '../../../store'
-import type { ChatStyle, PromptTemplate, Settings } from '../../../types'
+import { testSearchProvider } from '../../../services/api'
+import type {
+  ChatStyle, PromptTemplate, SearchProvider, SearchTestResult, Settings,
+} from '../../../types'
 import { DiagnosticsPanel } from '../../diagnostics/components/DiagnosticsPanel'
 import { MemoryPanel } from './MemoryPanel'
+import { ModelPicker } from './ModelPicker'
+import type { ModelSource } from './ModelPicker'
+
+/** 桌面端「多 API」里的一条上游。密钥加密存在主进程，这里只知道有没有。 */
+interface DesktopApiEntry {
+  id: string
+  name: string
+  baseUrl: string
+  hasKey: boolean
+  enabled: boolean
+}
+
+interface DesktopBridge {
+  getEnhancements: () => Promise<{ apiList?: DesktopApiEntry[] }>
+  revealApiKey: (id: string) => Promise<string>
+}
+
+const desktopBridge = () =>
+  (window as unknown as { chatbotDesktop?: DesktopBridge }).chatbotDesktop
 
 /** 桌面端注入的「多 API」分区只在 Electron 里有意义，浏览器里不显示这一栏。 */
 const isDesktop = () => Boolean((window as unknown as { chatbotDesktop?: unknown }).chatbotDesktop)
@@ -39,6 +61,14 @@ export function SettingsModal() {
   const [newModel, setNewModel] = useState('')
   const [saving, setSaving] = useState(false)
   const [section, setSection] = useState<SectionKey>('chat')
+  // 正在检测的搜索配置 id，以及每套配置最近一次的检测结果。
+  const [testingId, setTestingId] = useState('')
+  const [testResults, setTestResults] = useState<Record<string, SearchTestResult>>({})
+  // 当前展开的模型选择器。'chat'/'image' 是那两栏，搜索配置用它自己的 id。
+  const [pickerFor, setPickerFor] = useState('')
+  // 桌面端「多 API」里的上游列表。聊天用的地址和密钥被那一栏接管，
+  // 「聊天」栏里的两个输入框是空的（且被隐藏），所以模型清单得问它要。
+  const [desktopApis, setDesktopApis] = useState<DesktopApiEntry[]>([])
 
   useEffect(() => {
     if (settingsOpen && settings) {
@@ -48,13 +78,30 @@ export function SettingsModal() {
         models: [...settings.models],
         styles: settings.styles.map((s) => ({ ...s })),
         prompt_templates: (settings.prompt_templates || []).map((t) => ({ ...t })),
+        search_providers: (settings.search_providers || []).map((p) => ({ ...p })),
       })
     }
   }, [settingsOpen, settings])
 
   // 每次重新打开都回到第一栏，避免上次停在「诊断」这种角落里。
   useEffect(() => {
-    if (settingsOpen) setSection('chat')
+    if (settingsOpen) {
+      setSection('chat')
+      // 模型选择器里的清单是按当时的地址和密钥拉的，重开时一律收起重来。
+      setPickerFor('')
+    }
+  }, [settingsOpen])
+
+  // 桌面端的聊天地址与密钥由「多 API」那一栏管理，打开设置时同步一份过来，
+  // 「检测可用模型」才知道该问哪个上游。浏览器里没有这个桥，直接跳过。
+  useEffect(() => {
+    const bridge = desktopBridge()
+    if (!settingsOpen || !bridge) return
+    let alive = true
+    void bridge.getEnhancements()
+      .then((data) => { if (alive) setDesktopApis(data?.apiList || []) })
+      .catch(() => { if (alive) setDesktopApis([]) })
+    return () => { alive = false }
   }, [settingsOpen])
 
   if (!settingsOpen || !draft) return null
@@ -68,6 +115,45 @@ export function SettingsModal() {
     if (!name || draft.models.includes(name)) return
     patch({ models: [...draft.models, name] })
     setNewModel('')
+  }
+
+  /** 从检测出的清单里整体替换模型列表。默认模型不在新列表里时改指第一个。 */
+  const applyPickedModels = (models: string[]) => {
+    if (!models.length) return
+    patch({
+      models,
+      default_model: models.includes(draft.default_model) ? draft.default_model : models[0],
+    })
+  }
+
+  /** 展开／收起模型选择器。同一时刻只开一个，免得几份清单同时在拉。 */
+  const togglePicker = (key: string) => setPickerFor((cur) => (cur === key ? '' : key))
+
+  /** 把当前填的地址和密钥包成一个上游，给搜索配置、图片这种单来源的地方用。 */
+  const singleSource = (id: string, name: string, baseUrl: string, apiKey: string): ModelSource[] =>
+    (baseUrl.trim() ? [{ id, name, baseUrl, resolveKey: async () => apiKey }] : [])
+
+  /**
+   * 聊天模型能问哪些上游要清单。
+   *
+   * 桌面端装了「多 API」时，聊天的地址和密钥由那一栏接管（「聊天」栏里的两个
+   * 输入框会被隐藏并留空），所以来源取那份列表，密钥点检测时才解密取出；
+   * 没装或列表为空时，退回「聊天」栏自己的地址和密钥。
+   */
+  const chatSources = (): ModelSource[] => {
+    const bridge = desktopBridge()
+    if (bridge) {
+      const usable = desktopApis.filter((api) => api.enabled && api.baseUrl.trim() && api.hasKey)
+      if (usable.length) {
+        return usable.map((api) => ({
+          id: api.id,
+          name: api.name,
+          baseUrl: api.baseUrl,
+          resolveKey: () => bridge.revealApiKey(api.id),
+        }))
+      }
+    }
+    return singleSource('legacy', '聊天设置', draft.base_url, draft.api_key)
   }
 
   const patchStyle = (id: string, p: Partial<ChatStyle>) =>
@@ -88,6 +174,67 @@ export function SettingsModal() {
     // 自定义风格的 id 只要不撞车就行，用时间戳足够。
     const id = `custom-${Date.now().toString(36)}`
     patch({ styles: [...draft.styles, { id, name: '新风格', prompt: '' }] })
+  }
+
+  // ---- 联网搜索的多套配置 ----
+
+  const patchProvider = (id: string, p: Partial<SearchProvider>) =>
+    patch({
+      search_providers: draft.search_providers.map((s) => (s.id === id ? { ...s, ...p } : s)),
+    })
+
+  const addProvider = () => {
+    const id = `search-${Date.now().toString(36)}`
+    patch({
+      search_providers: [
+        ...draft.search_providers,
+        {
+          id,
+          name: '新搜索配置',
+          base_url: '',
+          api_key: '',
+          model: 'deepseek-v4-flash',
+          max_output_tokens: 4000,
+        },
+      ],
+    })
+  }
+
+  const removeProvider = (id: string) => {
+    // 至少留一套：删空之后这一栏会什么都没有，用户只能重置设置才能恢复。
+    if (draft.search_providers.length <= 1) return
+    const providers = draft.search_providers.filter((s) => s.id !== id)
+    patch({
+      search_providers: providers,
+      // 删掉的正好是当前使用的那套时要改指向，否则会指向一个不存在的 id。
+      search_provider_id:
+        draft.search_provider_id === id ? providers[0].id : draft.search_provider_id,
+    })
+  }
+
+  /** 用草稿里的配置真跑一次检索。不要求先保存，改完就能试。 */
+  const runProviderTest = async (provider: SearchProvider) => {
+    setTestingId(provider.id)
+    try {
+      const result = await testSearchProvider(provider)
+      setTestResults((prev) => ({ ...prev, [provider.id]: result }))
+    } catch (error) {
+      setTestResults((prev) => ({
+        ...prev,
+        [provider.id]: {
+          ok: false,
+          status: 'error',
+          message: error instanceof Error ? error.message : String(error),
+          endpoint: '',
+          elapsed_ms: 0,
+          sources: [],
+          text: '',
+          tool_calls: 0,
+        },
+      }))
+    } finally {
+      setTestingId('')
+    }
   }
 
   const patchTemplate = (id: string, p: Partial<PromptTemplate>) =>
@@ -169,7 +316,31 @@ export function SettingsModal() {
               </div>
 
               <div className="field">
-                <label>模型列表</label>
+                <div className="field-head">
+                  <label>模型列表</label>
+                  <button
+                    className="btn-ghost model-probe-btn"
+                    disabled={!chatSources().length}
+                    title={
+                      chatSources().length
+                        ? '读取上游的模型清单，从里面挑'
+                        : '先填好 API 地址和密钥（桌面端在「多 API」那一栏）'
+                    }
+                    onClick={() => togglePicker('chat')}
+                  >
+                    <ListChecks size={13} /> {pickerFor === 'chat' ? '收起' : '检测可用模型'}
+                  </button>
+                </div>
+                {pickerFor === 'chat' && (
+                  <ModelPicker
+                    sources={chatSources()}
+                    selected={draft.models}
+                    multi
+                    allowTest
+                    onConfirm={applyPickedModels}
+                    onClose={() => setPickerFor('')}
+                  />
+                )}
                 <div className="model-list-edit">
                   {draft.models.map((m) => (
                     <div className="model-row" key={m}>
@@ -343,53 +514,156 @@ export function SettingsModal() {
               </div>
 
               <div className="field">
-                <label>API 地址（Base URL）</label>
-                <input
-                  value={draft.search_base_url}
-                  placeholder="https://api.deepseek.com"
-                  disabled={!draft.tools_enabled}
-                  onChange={(e) => patch({ search_base_url: e.target.value })}
-                />
+                <label>搜索服务配置</label>
+                <div className="style-list-edit">
+                  {draft.search_providers.map((p) => {
+                    const result = testResults[p.id]
+                    const testing = testingId === p.id
+                    return (
+                      <div className="style-row search-provider" key={p.id}>
+                        <div className="style-row-head">
+                          <label className="search-provider-pick" title="设为当前使用">
+                            <input
+                              type="radio"
+                              name="search-provider"
+                              disabled={!draft.tools_enabled}
+                              checked={draft.search_provider_id === p.id}
+                              onChange={() => patch({ search_provider_id: p.id })}
+                            />
+                          </label>
+                          <input
+                            className="style-name"
+                            value={p.name}
+                            placeholder="配置名称，例如 某某中转站"
+                            disabled={!draft.tools_enabled}
+                            onChange={(e) => patchProvider(p.id, { name: e.target.value })}
+                          />
+                          <button
+                            className="btn-ghost search-test-btn"
+                            disabled={!draft.tools_enabled || testing || !p.api_key.trim()}
+                            title={p.api_key.trim() ? '真跑一次检索，验证能不能联网' : '先填 API 密钥'}
+                            onClick={() => runProviderTest(p)}
+                          >
+                            {testing ? <Loader2 size={13} className="spin" /> : <Globe size={13} />}
+                            {testing ? '检测中…' : '检测'}
+                          </button>
+                          <button
+                            className="icon-btn"
+                            title={draft.search_providers.length <= 1 ? '至少保留一套配置' : '删除这套配置'}
+                            disabled={draft.search_providers.length <= 1}
+                            onClick={() => removeProvider(p.id)}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+
+                        <div className="field-row">
+                          <div className="field">
+                            <label>API 地址（Base URL）</label>
+                            <input
+                              value={p.base_url}
+                              placeholder="https://api.deepseek.com"
+                              disabled={!draft.tools_enabled}
+                              onChange={(e) => patchProvider(p.id, { base_url: e.target.value })}
+                            />
+                          </div>
+                          <div className="field">
+                            <label>API 密钥</label>
+                            <input
+                              type="password"
+                              value={p.api_key}
+                              placeholder="sk-…"
+                              disabled={!draft.tools_enabled}
+                              onChange={(e) => patchProvider(p.id, { api_key: e.target.value })}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="field-row">
+                          <div className="field">
+                            <div className="field-head">
+                              <label>搜索模型</label>
+                              <button
+                                className="btn-ghost model-probe-btn"
+                                disabled={
+                                  !draft.tools_enabled || !p.base_url.trim() || !p.api_key.trim()
+                                }
+                                title={p.api_key.trim() ? '读取这个上游的模型清单' : '先填地址和密钥'}
+                                onClick={() => togglePicker(p.id)}
+                              >
+                                <ListChecks size={13} /> {pickerFor === p.id ? '收起' : '检测'}
+                              </button>
+                            </div>
+                            <input
+                              value={p.model}
+                              placeholder="deepseek-v4-flash"
+                              disabled={!draft.tools_enabled}
+                              onChange={(e) => patchProvider(p.id, { model: e.target.value })}
+                            />
+                          </div>
+                          <div className="field">
+                            <label>单次搜索输出上限（Tokens）</label>
+                            <input
+                              type="number" min={1000} max={32000} step={500}
+                              value={p.max_output_tokens}
+                              disabled={!draft.tools_enabled}
+                              onChange={(e) => patchProvider(p.id, {
+                                max_output_tokens: parseInt(e.target.value) || 4000,
+                              })}
+                            />
+                          </div>
+                        </div>
+
+                        {pickerFor === p.id && (
+                          <ModelPicker
+                            sources={singleSource(p.id, p.name, p.base_url, p.api_key)}
+                            selected={[p.model]}
+                            onConfirm={(models) => patchProvider(p.id, { model: models[0] })}
+                            onClose={() => setPickerFor('')}
+                          />
+                        )}
+
+                        {result && (
+                          <div className={`search-test-result ${result.status}`}>
+                            <div className="search-test-head">
+                              {result.status === 'ok' && <CheckCircle2 size={14} />}
+                              {result.status === 'no_sources' && <AlertTriangle size={14} />}
+                              {result.status === 'error' && <XCircle size={14} />}
+                              <span>{result.message}</span>
+                              {result.elapsed_ms > 0 && (
+                                <em>{(result.elapsed_ms / 1000).toFixed(1)}s</em>
+                              )}
+                            </div>
+                            {result.endpoint && (
+                              <div className="search-test-line">实际接口：{result.endpoint}</div>
+                            )}
+                            {result.sources.length > 0 && (
+                              <div className="search-test-line">
+                                命中来源：{result.sources.slice(0, 6).map((s) => s.host || s.url).join('、')}
+                                {result.sources.length > 6 ? ` 等 ${result.sources.length} 个` : ''}
+                              </div>
+                            )}
+                            {result.text && (
+                              <div className="search-test-line search-test-text">{result.text}</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                  <button className="btn-ghost" disabled={!draft.tools_enabled} onClick={addProvider}>
+                    <Plus size={14} /> 添加搜索配置
+                  </button>
+                </div>
                 <div className="hint">
-                  搜索走独立上游，与聊天接口无关。目前仅 DeepSeek 的 Responses 接口内置搜索。
-                </div>
-              </div>
-
-              <div className="field">
-                <label>API 密钥</label>
-                <input
-                  type="password"
-                  value={draft.search_api_key}
-                  placeholder="sk-…"
-                  disabled={!draft.tools_enabled}
-                  onChange={(e) => patch({ search_api_key: e.target.value })}
-                />
-                <div className="hint">留空则不会把搜索工具提供给模型</div>
-              </div>
-
-              <div className="field-row">
-                <div className="field">
-                  <label>搜索模型</label>
-                  <input
-                    value={draft.search_model}
-                    placeholder="deepseek-v4-flash"
-                    disabled={!draft.tools_enabled}
-                    onChange={(e) => patch({ search_model: e.target.value })}
-                  />
-                </div>
-                <div className="field">
-                  <label>单次搜索输出上限（Tokens）</label>
-                  <input
-                    type="number" min={1000} max={32000} step={500}
-                    disabled={!draft.tools_enabled}
-                    value={draft.search_max_output_tokens}
-                    onChange={(e) => patch({ search_max_output_tokens: parseInt(e.target.value) || 4000 })}
-                  />
-                  <div className="hint">调低容易让思考占满预算而拿不到结论</div>
+                  搜索走独立上游，与聊天接口无关，只有选中（左侧圆点）的那一套会被使用，
+                  失败时不会自动切到别的配置。目前只有 DeepSeek 的 Responses 接口内置搜索，
+                  中转站需要它自己也支持转发这个接口。地址带不带 /v1 都行，后端会自动试。
                 </div>
               </div>
               <div className="hint">
-                一次联网问答的输入量约为普通对话的十几倍，按量计费时请留意消耗。
+                一次联网问答的输入量约为普通对话的十几倍，按量计费时请留意消耗；
+                「检测」按钮同样会真实发起一次检索。
               </div>
             </section>
             <section className="settings-pane" hidden={section !== 'memory'}>
@@ -608,12 +882,35 @@ export function SettingsModal() {
               </div>
 
               <div className="field">
-                <label>图片模型</label>
+                <div className="field-head">
+                  <label>图片模型</label>
+                  <button
+                    className="btn-ghost model-probe-btn"
+                    disabled={!draft.image_base_url.trim() || !draft.image_api_key.trim()}
+                    title={draft.image_api_key.trim() ? '读取上游的模型清单' : '先填地址和密钥'}
+                    onClick={() => togglePicker('image')}
+                  >
+                    <ListChecks size={13} /> {pickerFor === 'image' ? '收起' : '检测可用模型'}
+                  </button>
+                </div>
                 <input
                   value={draft.image_model}
                   placeholder="gpt-image-2"
                   onChange={(e) => patch({ image_model: e.target.value })}
                 />
+                {pickerFor === 'image' && (
+                  <ModelPicker
+                    sources={singleSource(
+                      'image', '图片设置', draft.image_base_url, draft.image_api_key,
+                    )}
+                    selected={[draft.image_model]}
+                    onConfirm={(models) => patch({ image_model: models[0] })}
+                    onClose={() => setPickerFor('')}
+                  />
+                )}
+                <div className="hint">
+                  清单是上游的完整模型列表，画图模型通常带 image / dall / flux / seedream 等字样。
+                </div>
               </div>
 
               <div className="field-row">

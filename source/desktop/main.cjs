@@ -315,17 +315,41 @@ function reservePort() {
   })
 }
 
-function waitForBackend(url, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs
+/**
+ * 等后端把 /api/health 支起来。
+ *
+ * 后端是 PyInstaller 单文件 exe，第一次跑（尤其是刚升级完）要先把几十 MB
+ * 解到临时目录，还会被 Defender 整个扫一遍，冷启动几十秒很正常——原来固定
+ * 30 秒的上限就是这么被打穿的（启动失败后手动再开一次反而秒起）。
+ * 所以这里不再单纯看时间：只要后端进程还活着就继续等，硬上限放到 5 分钟
+ * 兜底；进程要是已经退了，就不必再空等，exit 回调那边会报真正的原因。
+ */
+function waitForBackend(url, timeoutMs = 300000) {
+  const started = Date.now()
+  const deadline = started + timeoutMs
+  let notified = false
   return new Promise((resolve, reject) => {
     const retry = () => {
-      if (Date.now() >= deadline) return reject(new Error('等待本地后端启动超时'))
+      // 进程没了就别等了，等到超时只会把真实死因盖成「超时」。
+      if (!backendProcess) return reject(new Error('本地后端进程已退出，未能启动'))
+      const waited = Date.now() - started
+      if (waited >= timeoutMs || Date.now() >= deadline) {
+        return reject(new Error(`等待本地后端启动超时（已等 ${Math.round(waited / 1000)} 秒）`))
+      }
+      // 超过 20 秒还没起来，多半在解包或被杀毒软件扫，留一条日志方便回溯。
+      if (!notified && waited > 20000) {
+        notified = true
+        diag.warn('backend', '后端启动较慢，仍在等待', { waitedMs: waited, url })
+      }
       setTimeout(check, 200)
     }
     const check = () => {
       const request = http.get(`${url}/api/health`, (response) => {
         response.resume()
-        if (response.statusCode === 200) return resolve()
+        if (response.statusCode === 200) {
+          if (notified) diag.info('backend', '后端最终启动成功', { waitedMs: Date.now() - started })
+          return resolve()
+        }
         retry()
       })
       request.setTimeout(1000, () => request.destroy())

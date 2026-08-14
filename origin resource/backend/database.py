@@ -171,6 +171,19 @@ DEFAULT_PROMPT_TEMPLATES = [
     },
 ]
 
+DEFAULT_SEARCH_PROVIDERS = [
+    {
+        "id": "default",
+        "name": "DeepSeek 官方",
+        "base_url": "https://api.deepseek.com",
+        "api_key": "",
+        "model": "deepseek-v4-flash",
+        # 搜索结果由服务端塞进上下文，一次联网问答的输入量是普通对话的十几倍，
+        # 这里给单次搜索的输出留一个可调的预算。
+        "max_output_tokens": 4000,
+    },
+]
+
 DEFAULT_SETTINGS = {
     "base_url": "",
     "api_key": "",
@@ -204,13 +217,11 @@ DEFAULT_SETTINGS = {
     # ---- 工具调用与联网搜索 ----
     # 搜索单独配一组上游：主对话模型（Claude 等）走 /chat/completions，
     # 而服务端内置的 web_search 只挂在 DeepSeek 的 /responses 上，两者不是同一家。
+    # 配置存成列表，官方直连和各家中转站可以各存一条随时切换，
+    # search_provider_id 指向当前正在用的那条。
     "tools_enabled": True,
-    "search_base_url": "https://api.deepseek.com",
-    "search_api_key": "",
-    "search_model": "deepseek-v4-flash",
-    # 搜索结果由服务端塞进上下文，一次联网问答的输入量是普通对话的十几倍，
-    # 这里给单次搜索的输出留一个可调的预算。
-    "search_max_output_tokens": 4000,
+    "search_providers": DEFAULT_SEARCH_PROVIDERS,
+    "search_provider_id": "default",
     # ---- 回答风格 ----
     # 全部风格（含内置）存在这一个键里，方便用户改内置风格的措辞。
     # 会话没指定风格时用 default_style_id。
@@ -251,6 +262,20 @@ def get_settings() -> dict:
         migrated["image_base_url"] = stored["base_url"]
     if "image_api_key" not in stored and "api_key" in stored:
         migrated["image_api_key"] = stored["api_key"]
+    # 旧版本的搜索配置是四个平铺字段，只能配一套。转成列表里的第一条，
+    # 老用户升级后配置不丢，也不用重填。
+    if "search_providers" not in stored and any(
+        key in stored for key in _LEGACY_SEARCH_KEYS
+    ):
+        migrated["search_providers"] = [{
+            "id": "default",
+            "name": "默认配置",
+            "base_url": stored.get("search_base_url") or "https://api.deepseek.com",
+            "api_key": stored.get("search_api_key") or "",
+            "model": stored.get("search_model") or "deepseek-v4-flash",
+            "max_output_tokens": stored.get("search_max_output_tokens") or 4000,
+        }]
+        migrated["search_provider_id"] = "default"
     if migrated:
         with get_db() as db:
             for key, value in migrated.items():
@@ -265,9 +290,60 @@ def get_settings() -> dict:
         with get_db() as db:
             db.execute("DELETE FROM settings WHERE key='browser_search_enabled'")
         merged.pop("browser_search_enabled", None)
+    # 迁移完就把旧的平铺搜索字段清掉：前端保存时会把整个设置对象发回来，
+    # 而接口模型不接受未知字段，留着反而会让保存失败。
+    stale = [key for key in _LEGACY_SEARCH_KEYS if key in stored]
+    if stale:
+        with get_db() as db:
+            for key in stale:
+                db.execute("DELETE FROM settings WHERE key=?", (key,))
+    for key in _LEGACY_SEARCH_KEYS:
+        merged.pop(key, None)
+    merged["search_providers"] = _normalize_search_providers(merged.get("search_providers"))
+    ids = {p["id"] for p in merged["search_providers"]}
+    if merged.get("search_provider_id") not in ids:
+        merged["search_provider_id"] = merged["search_providers"][0]["id"]
     merged["styles"] = _normalize_styles(merged.get("styles"))
     merged["prompt_templates"] = _normalize_prompt_templates(merged.get("prompt_templates"))
     return merged
+
+
+# 旧版本的单套搜索配置字段，只在迁移时读一次，之后从库里删掉。
+_LEGACY_SEARCH_KEYS = (
+    "search_base_url", "search_api_key", "search_model", "search_max_output_tokens",
+)
+
+
+def _normalize_search_providers(stored) -> list[dict]:
+    """把搜索配置列表补成固定形状，并保证至少有一条、id 不重复。
+
+    前端删光了也要留一条：为空时联网设置页会没有任何可编辑的东西，
+    用户只能重置设置才能恢复。
+    """
+    if not isinstance(stored, list):
+        stored = []
+    result: list[dict] = []
+    seen: set[str] = set()
+    for index, item in enumerate(stored):
+        if not isinstance(item, dict):
+            continue
+        pid = str(item.get("id") or "") or f"search-{index}"
+        while pid in seen:
+            pid = f"{pid}-{index}"
+        seen.add(pid)
+        try:
+            budget = int(item.get("max_output_tokens") or 4000)
+        except (TypeError, ValueError):
+            budget = 4000
+        result.append({
+            "id": pid,
+            "name": str(item.get("name") or "未命名配置"),
+            "base_url": str(item.get("base_url") or ""),
+            "api_key": str(item.get("api_key") or ""),
+            "model": str(item.get("model") or ""),
+            "max_output_tokens": max(budget, 512),
+        })
+    return result or [dict(p) for p in DEFAULT_SEARCH_PROVIDERS]
 
 
 def _normalize_prompt_templates(stored) -> list[dict]:

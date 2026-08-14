@@ -40,7 +40,9 @@ def _run_web_search(
         raise ToolError("缺少 query 参数")
 
     result: dict[str, Any] | None = None
-    for event in web_search.search(settings, query):
+    # 搜索配置可以存多套，这里只用当前选中的那套；失败也不自动换下一套，
+    # 免得用户不知情地在另一家上按量花钱。
+    for event in web_search.search(web_search.active_provider(settings), query):
         if event["type"] == "progress":
             yield event
         elif event["type"] == "error":

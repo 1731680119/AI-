@@ -50,6 +50,7 @@ hiddenimports = [
     "sqlite3",
     # 本项目自身的路由模块（routers/__init__ 已显式导入，这里再兜底一次）
     "logging_config",
+    "model_probe",
     "routers",
     "routers.chat",
     "routers.code_exec",

@@ -153,6 +153,54 @@ export interface MemoryList {
   block_chars: number
 }
 
+/** 一套联网搜索的上游配置。可以存多套，同一时刻只有一套生效。 */
+export interface SearchProvider {
+  id: string
+  /** 显示用的名字，例如「DeepSeek 官方」「某中转站」。 */
+  name: string
+  base_url: string
+  api_key: string
+  model: string
+  /** 单次搜索的输出预算。搜索结果由服务端塞进上下文，输入量远大于普通对话。 */
+  max_output_tokens: number
+}
+
+/** 设置页「检测」按钮拿到的报告。ok 为真才代表真的能联网检索。 */
+export interface SearchTestResult {
+  ok: boolean
+  /** ok=能用；no_sources=能出字但没执行搜索；error=请求失败。 */
+  status: 'ok' | 'no_sources' | 'error'
+  message: string
+  /** 实际命中的接口地址，用来确认自动容错选中了哪条路径。 */
+  endpoint: string
+  elapsed_ms: number
+  sources: { url: string; host: string }[]
+  text: string
+  tool_calls: number
+  http_status?: number
+}
+
+/** 「检测可用模型」拿到的清单。只读上游的 /models，不产生调用费用。 */
+export interface ModelListResult {
+  ok: boolean
+  message: string
+  /** 实际命中的接口地址，用来确认自动容错选中了哪条路径。 */
+  endpoint: string
+  models: string[]
+  elapsed_ms: number
+  http_status?: number
+}
+
+/** 单个模型的可用性测试结果。清单里有不等于调得动，所以要单独验。 */
+export interface ModelTestResult {
+  ok: boolean
+  message: string
+  elapsed_ms: number
+  /** 模型回的第一句，用来肉眼确认确实是它在答。 */
+  reply: string
+  http_status?: number
+}
+
 export interface Settings {
   base_url: string
   api_key: string
@@ -171,12 +219,10 @@ export interface Settings {
   image_quality: string
   /** 是否把工具（目前只有联网搜索）声明给模型。 */
   tools_enabled: boolean
-  /** 搜索走独立上游：服务端内置 web_search 只挂在 DeepSeek 的 Responses 接口上。 */
-  search_base_url: string
-  search_api_key: string
-  search_model: string
-  /** 单次搜索的输出预算。搜索结果由服务端塞进上下文，输入量远大于普通对话。 */
-  search_max_output_tokens: number
+  /** 搜索走独立上游，可以存多套（官方直连 / 各家中转站）随时切换。 */
+  search_providers: SearchProvider[]
+  /** 当前正在使用的那套搜索配置的 id。 */
+  search_provider_id: string
   /** 上下文超限时自动把靠前历史压缩成摘要。 */
   context_auto_compact: boolean
   /** 上下文预算（按字符估算）。 */
