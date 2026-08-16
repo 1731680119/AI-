@@ -20,6 +20,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const diag = require('./diagnostics-logger.cjs')
+const archive = require('./diagnostics-archive.cjs')
 
 const APP_NAME = 'AI Chatbot'
 const CLOSE_DELAY_MS = 5000
@@ -979,31 +980,81 @@ ipcMain.handle('desktop:diagnostics-open-log-dir', async () => {
   return { opened: !error, error: error || '' }
 })
 ipcMain.handle('desktop:diagnostics-export-bundle', () => exportDiagnosticsBundle())
+/** 打开诊断文件夹（崩溃日志归档的根目录）。目录不存在时先建出来，免得打开失败。 */
+ipcMain.handle('desktop:diagnostics-open-archive-dir', async () => {
+  const root = archive.archiveRoot(diag.paths().logDir)
+  try {
+    fs.mkdirSync(root, { recursive: true })
+  } catch {
+    /* 建不出来就让 openPath 去报错 */
+  }
+  const error = await shell.openPath(root)
+  const pending = archive.listArchives(diag.paths().logDir).filter((item) => item.status === 'pending')
+  return { opened: !error, error: error || '', path: root, pending: pending.length }
+})
 ipcMain.handle('desktop:diagnostics-copy', (event, text) => {
   clipboard.writeText(String(text ?? ''))
   return true
 })
 
-/** 上次异常退出后的提示。只提示一次，用户可以直接去看日志或导出诊断包。 */
+/**
+ * 上次异常退出后的提示。
+ *
+ * 顺序是先打包再弹窗：闪退时后端多半没起来，等用户点按钮才打包很可能又赶上一次崩溃，
+ * 所以日志先落盘成 `未处理-…` 文件夹，弹窗只是告知 + 提供入口。用户点忽略也已经存好了。
+ */
 function promptLastRunCrashed(lastRun) {
   const latest = lastRun.crashes[lastRun.crashes.length - 1]
   const detail = latest
     ? `最近一次记录：${latest.timestamp}\n${latest.kind}：${latest.message}`
     : '没有找到崩溃详情，日志里可能仍有线索。'
+
+  const result = archive.createArchive({
+    logDir: diag.paths().logDir,
+    reason: lastRun.reason,
+    crashes: lastRun.crashes,
+    env: {
+      appVersion: app.getVersion(),
+      previousVersion: lastRun.previousVersion,
+      execPath: process.execPath,
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      node: process.versions.node,
+      platform: `${process.platform} ${os.release()}`,
+      arch: process.arch,
+    },
+  })
+
+  if (result.created) diag.info('diagnostics', '已生成诊断文件夹', { name: result.name, files: result.files })
+  else diag.error('diagnostics', `生成诊断文件夹失败：${result.error}`)
+
+  const location = result.created
+    ? `日志已自动打包到：\n${result.name}\n（位于日志目录的 diagnostics 文件夹内，文件夹里有说明.md）`
+    : `自动打包日志失败：${result.error}\n可以手动打开日志文件夹查看。`
+
   dialog
     .showMessageBox({
       type: 'warning',
       title: '上次运行异常退出',
       message: '上次运行异常退出',
-      detail: `${detail}\n\n可以查看日志或导出诊断包交给 AI 分析。`,
-      buttons: ['导出诊断包', '打开日志文件夹', '忽略'],
+      detail: `${detail}\n\n${location}`,
+      buttons: result.created
+        ? ['打开文件夹', '标记为已处理', '忽略']
+        : ['打开日志文件夹', '忽略'],
       defaultId: 0,
-      cancelId: 2,
+      cancelId: result.created ? 2 : 1,
       noLink: true,
     })
     .then(({ response }) => {
-      if (response === 0) exportDiagnosticsBundle()
-      else if (response === 1) shell.openPath(diag.paths().logDir)
+      if (!result.created) {
+        if (response === 0) shell.openPath(diag.paths().logDir)
+        return
+      }
+      if (response === 0) shell.openPath(result.dir)
+      else if (response === 1) {
+        const marked = archive.markProcessed(result.dir)
+        diag.info('diagnostics', marked.ok ? '诊断文件夹已标记为已处理' : `标记失败：${marked.error}`)
+      }
     })
     .catch(() => { /* 对话框失败不影响启动 */ })
 }
@@ -1123,6 +1174,11 @@ if (hasSingleInstanceLock) {
       }
       createWindow()
       if (!lastRun.wasClean) promptLastRunCrashed(lastRun)
+      // 清理放在窗口出来之后，纯磁盘操作不该拖慢启动；每天最多跑一次由模块内部把关。
+      const swept = archive.cleanup(diag.paths().logDir)
+      if (!swept.skipped && swept.removed.length) {
+        diag.info('diagnostics', '已清理过期诊断文件夹', { count: swept.removed.length })
+      }
     } catch (error) {
       diag.record('CRITICAL', 'lifecycle', `启动失败：${error.message}`, {}, { sync: true })
       diag.recordCrash('startupFailed', error.message, error.stack ?? '')

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Download, FolderOpen, Pause, Play, RefreshCw, Search } from 'lucide-react'
+import { AlertTriangle, Download, FolderOpen, FolderSearch, Pause, Play, RefreshCw, Search } from 'lucide-react'
 import * as api from '../../../services/api'
 import type { LogRecord } from '../../../services/api'
 import { logAction } from '../../../services/diagnostics'
@@ -24,14 +24,27 @@ interface BundleResult {
   containsSensitive?: boolean
 }
 
-/** 桌面端才有的能力。浏览器里跑时这些都不存在，各处调用前都要判空。 */
+interface ArchiveFolderResult {
+  opened: boolean
+  error: string
+  path?: string
+  pending?: number
+}
+
+/**
+ * 桌面端才有的能力。浏览器里跑时这些都不存在，各处调用前都要判空。
+ *
+ * 桥的名字是 `chatbotDesktop`，不是 `desktop`——写错了不会报错，
+ * 只会静默退回浏览器分支（点「打开日志文件夹」变成只显示一行路径）。
+ */
 const desktop = () => (window as unknown as {
-  desktop?: {
+  chatbotDesktop?: {
     openLogFolder?: () => Promise<{ opened: boolean; error: string }>
+    openDiagnosticsFolder?: () => Promise<ArchiveFolderResult>
     exportDiagnosticsBundle?: () => Promise<BundleResult>
     copyToClipboard?: (text: string) => Promise<boolean>
   }
-}).desktop
+}).chatbotDesktop
 
 const BUNDLE_FAILURES: Record<string, string> = {
   'backend-unavailable': '后端未启动，已改为打开日志文件夹',
@@ -145,6 +158,20 @@ export function DiagnosticsPanel() {
     if (!result.opened) setNotice(`打开失败：${result.error || '未知原因'}`)
   }
 
+  /** 崩溃日志归档目录。软件异常退出后下次启动会自动往这里写「未处理-…」文件夹。 */
+  const openDiagnosticsFolder = async () => {
+    logAction('打开诊断文件夹')
+    const bridge = desktop()
+    if (!bridge?.openDiagnosticsFolder) {
+      setNotice('浏览器中无法打开本地文件夹')
+      return
+    }
+    const result = await bridge.openDiagnosticsFolder()
+    if (!result.opened) setNotice(`打开失败：${result.error || '未知原因'}`)
+    else if (result.pending) setNotice(`有 ${result.pending} 份未处理的崩溃日志，处理完请把文件夹名改成「已处理」`)
+    else setNotice('没有未处理的崩溃日志')
+  }
+
   const exportBundle = async () => {
     setBusy('bundle')
     logAction('导出诊断包', { verbose })
@@ -174,6 +201,9 @@ export function DiagnosticsPanel() {
       <div className="diag-actions">
         <button className="btn-ghost" onClick={openFolder}>
           <FolderOpen size={15} /> 打开日志文件夹
+        </button>
+        <button className="btn-ghost" onClick={openDiagnosticsFolder}>
+          <FolderSearch size={15} /> 打开诊断文件夹
         </button>
         <button className="btn-ghost" onClick={copyRecent}>
           复制最近日志

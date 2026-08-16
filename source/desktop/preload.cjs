@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('chatbotDesktop', {
   diagnosticsLog: (entries) => ipcRenderer.invoke('desktop:diagnostics-log', entries),
   diagnosticsInfo: () => ipcRenderer.invoke('desktop:diagnostics-info'),
   openLogFolder: () => ipcRenderer.invoke('desktop:diagnostics-open-log-dir'),
+  openDiagnosticsFolder: () => ipcRenderer.invoke('desktop:diagnostics-open-archive-dir'),
   exportDiagnosticsBundle: () => ipcRenderer.invoke('desktop:diagnostics-export-bundle'),
   copyToClipboard: (text) => ipcRenderer.invoke('desktop:diagnostics-copy', text),
   onDeepseekTabs: (callback) => {
