@@ -6,6 +6,7 @@ const {
   dialog,
   ipcMain,
   Menu,
+  // safeStorage 只在 migrateSettingsLocation 里用一次：把旧版 DPAPI 密文解回明文。
   safeStorage,
   shell,
   Tray,
@@ -73,7 +74,14 @@ const windows = new Map()
 const allowedToClose = new Set()
 const apiAttemptLocks = new Map()
 
+// 桌面设置放在 userData/data/ 而不是 userData/ 根目录：
+// data/ 是多机同步 junction 的挂载点（指向仓库 user-data/），放根目录就同步不到。
 function settingsPath() {
+  return path.join(app.getPath('userData'), 'data', 'desktop-settings.json')
+}
+
+// 1.2.7 及更早版本的位置。只在 migrateSettingsLocation 里读一次。
+function legacySettingsPath() {
   return path.join(app.getPath('userData'), 'desktop-settings.json')
 }
 
@@ -131,7 +139,7 @@ function loadDesktopSettings() {
 }
 
 function saveDesktopSettings() {
-  fs.mkdirSync(app.getPath('userData'), { recursive: true })
+  fs.mkdirSync(path.dirname(settingsPath()), { recursive: true })
   fs.writeFileSync(
     settingsPath(),
     JSON.stringify({ closePreference, enhancements }, null, 2),
@@ -139,18 +147,66 @@ function saveDesktopSettings() {
   )
 }
 
-function encryptApiKey(value) {
-  if (!value) return ''
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('Windows 安全存储当前不可用，无法加密 API Key')
-  return safeStorage.encryptString(value).toString('base64')
+/**
+ * 把 1.2.7 及更早版本的 desktop-settings.json 迁到 data/ 下，并把 API Key 从
+ * safeStorage 密文还原成明文。
+ *
+ * 旧版用 safeStorage 加密 Key，Windows 上走 DPAPI——密文绑定当前用户+当前机器，
+ * 换台电脑解不开。多机同步要让 Key 跟着走，就只能存明文（绘图 API 的 Key 本来
+ * 也是明文存在 chatbot.db 里的，这里只是对齐）。
+ *
+ * 触发条件不能简单写成"新文件不存在"：多机同步下，先升级的那台会把一份**空的**
+ * 新配置推到仓库，另一台拉下来后新文件已存在，真正存着 Key 的旧文件就永远迁不动了。
+ * 所以只要新配置的 apiList 是空的、而旧文件里有内容，就照样迁。
+ *
+ * 必须在 loadDesktopSettings 之前跑，否则读到的是空配置。
+ */
+function migrateSettingsLocation() {
+  const target = settingsPath()
+  const legacy = legacySettingsPath()
+  if (!fs.existsSync(legacy)) return
+  try {
+    const settings = JSON.parse(fs.readFileSync(legacy, 'utf8'))
+    const apiList = Array.isArray(settings?.enhancements?.apiList)
+      ? settings.enhancements.apiList
+      : []
+    if (fs.existsSync(target) && !shouldOverwriteWithLegacy(target, apiList)) return
+    if (!settings.enhancements) settings.enhancements = {}
+    settings.enhancements.apiList = apiList.map(({ encryptedKey, ...item }) => ({
+      ...item,
+      // 解不开就留空，用户重填一次即可，不要因为一条坏数据中断整个迁移。
+      apiKey: item.apiKey || decryptLegacyApiKey(encryptedKey),
+    }))
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, JSON.stringify(settings, null, 2), 'utf8')
+    // 旧文件留作备份，不直接删——迁移出错时还能人工找回。
+    fs.renameSync(legacy, `${legacy}.bak`)
+    diag.info('settings', '桌面设置已迁移到 data/ 目录', { apiCount: apiList.length })
+  } catch (error) {
+    console.error('迁移桌面设置失败', error)
+    diag.error('settings', '迁移桌面设置失败', { message: error.message })
+  }
 }
 
-function decryptApiKey(value) {
+/** 新配置已存在时，只有它没有任何 API、而旧文件有，才值得覆盖。 */
+function shouldOverwriteWithLegacy(target, legacyApiList) {
+  if (!legacyApiList.length) return false
+  try {
+    const current = JSON.parse(fs.readFileSync(target, 'utf8'))
+    return !(current?.enhancements?.apiList || []).length
+  } catch {
+    // 新文件读不出来（损坏/半截），用旧的覆盖反而更安全。
+    return true
+  }
+}
+
+function decryptLegacyApiKey(value) {
   if (!value) return ''
   try {
+    if (!safeStorage.isEncryptionAvailable()) return ''
     return safeStorage.decryptString(Buffer.from(value, 'base64'))
   } catch (error) {
-    console.error('解密 API Key 失败', error)
+    console.error('解密旧版 API Key 失败', error)
     return ''
   }
 }
@@ -158,9 +214,11 @@ function decryptApiKey(value) {
 function publicEnhancementSettings() {
   const apiNames = new Map(enhancements.apiList.map((item) => [item.id, item.name]))
   return {
-    apiList: enhancements.apiList.map(({ encryptedKey, ...item }) => ({
+    // 这里的解构是把明文 apiKey 从返回值里剔掉——渲染进程只该拿到 hasKey，
+    // 真要看明文得走 desktop:reveal-api-key。改这行前先想清楚。
+    apiList: enhancements.apiList.map(({ apiKey, ...item }) => ({
       ...item,
-      hasKey: Boolean(encryptedKey),
+      hasKey: Boolean(apiKey),
     })),
     apiTimeoutSeconds: enhancements.apiTimeoutSeconds,
     deepseekUrl: enhancements.deepseekUrl,
@@ -179,7 +237,7 @@ function apiFingerprint(apiList) {
     name: item.name,
     baseUrl: item.baseUrl,
     enabled: item.enabled,
-    encryptedKey: item.encryptedKey,
+    apiKey: item.apiKey,
   })))
 }
 
@@ -208,10 +266,9 @@ function saveEnhancementSettings(payload) {
     const previous = existing.get(id)
     const name = String(raw.name || '').trim() || `API ${index + 1}`
     const baseUrl = normalizeBaseUrl(raw.baseUrl)
-    const encryptedKey = raw.apiKey
-      ? encryptApiKey(String(raw.apiKey))
-      : previous?.encryptedKey || ''
-    return { id, name, baseUrl, encryptedKey, enabled: raw.enabled !== false }
+    // 前端只在用户改动时才带上 apiKey，没带就沿用已存的那份。
+    const apiKey = raw.apiKey ? String(raw.apiKey) : previous?.apiKey || ''
+    return { id, name, baseUrl, apiKey, enabled: raw.enabled !== false }
   })
 
   const previousFingerprint = apiFingerprint(enhancements.apiList)
@@ -269,7 +326,7 @@ async function migrateLegacyApiSettings() {
         id: crypto.randomUUID(),
         name: '原有 API',
         baseUrl: normalizeBaseUrl(legacy.base_url || 'http://127.0.0.1/v1'),
-        encryptedKey: encryptApiKey(legacy.api_key || ''),
+        apiKey: legacy.api_key || '',
         enabled: true,
       })
     }
@@ -787,7 +844,7 @@ async function beginApiAttempt(payload) {
   try {
     await requestBackend('PUT', '/api/settings', {
       base_url: normalizeBaseUrl(api.baseUrl),
-      api_key: decryptApiKey(api.encryptedKey),
+      api_key: api.apiKey || '',
     })
     return token
   } catch (error) {
@@ -898,7 +955,7 @@ ipcMain.handle('desktop:get-enhancements', () => publicEnhancementSettings())
 ipcMain.handle('desktop:save-enhancements', (_event, payload) => saveEnhancementSettings(payload))
 ipcMain.handle('desktop:reveal-api-key', (_event, apiId) => {
   const api = enhancements.apiList.find((item) => item.id === apiId)
-  return api ? decryptApiKey(api.encryptedKey) : ''
+  return api ? api.apiKey || '' : ''
 })
 ipcMain.handle('desktop:get-api-plan', (_event, model) => {
   const modelName = String(model || '')
@@ -1157,6 +1214,7 @@ if (hasSingleInstanceLock) {
       previousVersion: lastRun.previousVersion,
     })
     try {
+      migrateSettingsLocation()
       loadDesktopSettings()
       migrateLegacyData()
       await startBackend()
