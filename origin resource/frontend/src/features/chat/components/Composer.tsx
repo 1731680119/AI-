@@ -5,6 +5,7 @@ import {
 import { AttachmentIcon } from '../attachmentIcon'
 import { useStore } from '../../../store'
 import { uploadFile } from '../../../services/api'
+import { useFileDrop } from '../../../hooks/useFileDrop'
 import type { Attachment } from '../../../types'
 
 const THINKING_OPTIONS = ['auto', 'minimal', 'low', 'medium', 'high'] as const
@@ -135,6 +136,13 @@ export function Composer() {
 
   const templates = settings?.prompt_templates || []
 
+  // 拖进来的文件走和回形针按钮完全相同的一套：体积上限、错误提示、上传中状态都复用。
+  // 类型不过滤——后端支持的格式远不止图片，交给 handleFiles/后端判断。
+  const { dragging, dropProps } = useFileDrop({
+    disabled: streaming || uploading,
+    onFiles: handleFiles,
+  })
+
   /** 模板只填进输入框，发不发由用户定；{{input}} 用已经打好的字替换。 */
   const applyTemplate = (content: string) => {
     const current = text.trim()
@@ -159,7 +167,8 @@ export function Composer() {
 
   return (
     <div className="composer-wrap">
-      <div className="composer">
+      <div className={`composer${dragging ? ' drag-over' : ''}`} {...dropProps}>
+        {dragging && <div className="composer-drop-hint">松开即可添加附件</div>}
         {attachments.length > 0 && (
           <div className="attach-list">
             {attachments.map((a) => (

@@ -73,6 +73,8 @@ export interface Store {
   images: ImageRecord[]
   imageBusy: boolean
   selectedImageId: string | null
+  /** 自增计数：每次「新建图片」+1，ImagePage 据此清空表单（页签不动）。 */
+  imageFormNonce: number
 
   init: () => Promise<void>
   loadConversations: () => Promise<void>
@@ -107,6 +109,8 @@ export interface Store {
   setMode: (m: AppMode) => void
   loadImages: () => Promise<void>
   selectImage: (id: string | null) => void
+  /** 回到空白的图片表单：清掉选中记录，并让 ImagePage 重置输入。 */
+  newImageDraft: () => void
   generateImages: (req: api.GenerateImageRequest) => Promise<void>
   editImage: (
     file: File,
@@ -164,6 +168,7 @@ export const useStore = create<Store>((set, get) => ({
   images: [],
   imageBusy: false,
   selectedImageId: null,
+  imageFormNonce: 0,
 
   init: async () => {
     // 设置和会话互不依赖，并行读取可以缩短首屏等待时间。
@@ -508,6 +513,9 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   selectImage: (id) => set({ selectedImageId: id }),
+
+  newImageDraft: () =>
+    set((s) => ({ selectedImageId: null, imageFormNonce: s.imageFormNonce + 1 })),
 
   generateImages: async (req) => {
     set({ imageBusy: true, error: null })

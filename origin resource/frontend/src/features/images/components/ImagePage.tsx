@@ -1,7 +1,8 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Sparkles, Wand2, Upload, X, Download, Loader2, ImagePlus } from 'lucide-react'
 import { useStore } from '../../../store'
 import { imageFileUrl } from '../../../services/api'
+import { useFileDrop } from '../../../hooks/useFileDrop'
 
 /** 参考图上限，与后端 MAX_REFERENCE_IMAGES 保持一致。 */
 const MAX_REFERENCES = 4
@@ -23,6 +24,7 @@ export function ImagePage() {
   const images = useStore((s) => s.images)
   const selectedImageId = useStore((s) => s.selectedImageId)
   const imageBusy = useStore((s) => s.imageBusy)
+  const imageFormNonce = useStore((s) => s.imageFormNonce)
   const generateImages = useStore((s) => s.generateImages)
   const editImage = useStore((s) => s.editImage)
 
@@ -44,32 +46,59 @@ export function ImagePage() {
     [images, selectedImageId],
   )
 
+  // 清理 blob URL 时需要“当前最新”的一份，但又不能把它们写进 effect 依赖
+  // （那样每加一张参考图都会触发一次清理）。用 ref 做镜像。
+  const previewsRef = useRef<string[]>([])
+  previewsRef.current = [srcPreview, ...refs.map((item) => item.preview)].filter(
+    (url): url is string => Boolean(url),
+  )
+
+  const revokePreviews = () => {
+    for (const url of previewsRef.current) URL.revokeObjectURL(url)
+    previewsRef.current = []
+  }
+
+  // 侧边栏「新建图片」把 imageFormNonce +1：整张表单回到空白，页签保持不动。
+  // 组件在切回聊天时会卸载，所以挂载时跑一次也只是对着空表单空转。
+  useEffect(() => {
+    revokePreviews()
+    setPrompt('')
+    setNegative('')
+    setCount(1)
+    setSrcFile(null)
+    setSrcPreview(null)
+    setRefs([])
+    setRefHint('')
+    setEditSize('')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageFormNonce])
+
+  // 切走时别把 blob URL 留在内存里。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => () => revokePreviews(), [])
+
   const pickFile = (f: File | null) => {
     if (srcPreview) URL.revokeObjectURL(srcPreview)
     setSrcFile(f)
     setSrcPreview(f ? URL.createObjectURL(f) : null)
   }
 
-  const addRefs = (files: FileList | null) => {
+  const addRefs = (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return
-    setRefs((prev) => {
-      const room = MAX_REFERENCES - prev.length
-      const picked = Array.from(files).slice(0, Math.max(0, room))
-      if (picked.length < files.length) {
-        setRefHint(`参考图最多 ${MAX_REFERENCES} 张，多余的已忽略`)
-      } else {
-        setRefHint('')
-      }
-      return [
-        ...prev,
-        ...picked.map((file) => ({
-          id: `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          file,
-          note: '',
-          preview: URL.createObjectURL(file),
-        })),
-      ]
-    })
+    // 必须在这里就把 FileList 拷成数组：调用方紧接着会清空 input.value，
+    // 而 FileList 是活引用，拖到 setRefs 的 updater 里再取就已经是空的了。
+    const incoming = Array.from(files)
+    const room = Math.max(0, MAX_REFERENCES - refs.length)
+    const picked = incoming.slice(0, room)
+    setRefHint(picked.length < incoming.length ? `参考图最多 ${MAX_REFERENCES} 张，多余的已忽略` : '')
+    if (picked.length === 0) return
+    const items = picked.map((file) => ({
+      id: `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      file,
+      note: '',
+      preview: URL.createObjectURL(file),
+    }))
+    setRefs((prev) => [...prev, ...items])
   }
 
   const removeRef = (id: string) => {
@@ -84,6 +113,18 @@ export function ImagePage() {
   const updateRefNote = (id: string, note: string) => {
     setRefs((prev) => prev.map((item) => (item.id === id ? { ...item, note } : item)))
   }
+
+  // 两个投放区各管各的：主图只取第一张并替换，参考图追加（仍受 4 张上限约束）。
+  const mainDrop = useFileDrop({
+    accept: 'image',
+    disabled: imageBusy,
+    onFiles: (files) => pickFile(files[0]),
+  })
+  const refDrop = useFileDrop({
+    accept: 'image',
+    disabled: imageBusy,
+    onFiles: (files) => addRefs(files),
+  })
 
   const canSubmit =
     !imageBusy && prompt.trim().length > 0 && (tab === 'generate' || srcFile !== null)
@@ -179,7 +220,10 @@ export function ImagePage() {
         {tab === 'edit' && (
           <>
             <label className="image-label">主图（会被修改并输出）</label>
-            <div className="image-upload-zone">
+            <div
+              className={`image-upload-zone${mainDrop.dragging ? ' drag-over' : ''}`}
+              {...mainDrop.dropProps}
+            >
               {srcPreview ? (
                 <div className="image-upload-preview">
                   <img src={srcPreview} alt="主图" />
@@ -190,7 +234,7 @@ export function ImagePage() {
               ) : (
                 <button className="upload-placeholder" onClick={() => fileInput.current?.click()}>
                   <Upload size={20} />
-                  <span>上传要编辑的图片</span>
+                  <span>上传要编辑的图片，或直接拖进来</span>
                 </button>
               )}
               <input
@@ -205,7 +249,10 @@ export function ImagePage() {
             <label className="image-label">
               参考图（可选，最多 {MAX_REFERENCES} 张）
             </label>
-            <div className="reference-zone">
+            <div
+              className={`reference-zone${refDrop.dragging ? ' drag-over' : ''}`}
+              {...refDrop.dropProps}
+            >
               {refs.length > 0 && (
                 <div className="reference-list">
                   {refs.map((item, index) => (
@@ -238,7 +285,7 @@ export function ImagePage() {
                   onClick={() => refInput.current?.click()}
                 >
                   <ImagePlus size={16} />
-                  <span>添加参考图</span>
+                  <span>添加参考图，或直接拖进来</span>
                 </button>
               )}
               <input

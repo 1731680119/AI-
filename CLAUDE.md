@@ -15,6 +15,7 @@
 1. **源码只在 `origin resource/`**。`source/frontend/` 和 `source/backend/` 是构建产物副本，改那里下次构建就被覆盖。
 2. **改完代码必须同步更新文档**，按 [08-变更记录.md](origin%20resource/docs/08-变更记录.md) §1 的四步走：写变更记录 → 更新对应文档 → 检查 00 的路由表 → 只改动过的地方。文档不更新，下一个 AI 就得重读全部源码，这套文档就白写了。
 3. **本仓库是开发目录的公开副本，不会自己更新**。开发在安装目录 `AI Chatbot/important resource/` 里做，那边改完必须把源码同步过来、并在这里补一条变更记录，步骤见 [08 §2](origin%20resource/docs/08-变更记录.md)。漏了不报错，只会让公开仓库悄悄停在旧版本（曾经停在 1.2.3，而安装包已经发到 1.2.6）。
+   **同步的时机不是「改完就同步」**：先打包给用户实测，用户说「改源码提交」之后才同步并提交，顺序见 [08 §2.1](origin%20resource/docs/08-变更记录.md)。
 4. 改完至少验证一次：
    ```bash
    cd "origin resource/frontend" && npm run build
@@ -28,6 +29,7 @@
 - `source/desktop/page-enhancements.js` 靠 CSS 类名定位注入点（`.enh-settings-slot`、`.modal-footer .btn-primary` 等）。React 侧改结构类名必须同步改注入脚本，否则桌面端 UI 静默消失，且只有装成桌面版才暴露。清单见 07 §4。
 - 加桌面能力要动三处：`main.cjs` 的 `ipcMain.handle` → `preload.cjs` 暴露 → 页面调用。漏一处静默失效。
 - 前端改完要 `npm run build` 并把 `frontend/dist/` 同步到 `source/frontend/`，否则安装包里还是旧界面。验证方式：grep `source/frontend/assets/*.css` 里的关键字符串。
+- **后端改完要重编 exe。** `source/backend/` 里只有一个 PyInstaller 打的 `chatbot-backend.exe`（本仓库已 gitignore），Python 源码不进安装包。改了 `backend/*.py` 却不重编，包能正常打出来、跑起来还是旧逻辑，**全程没有任何报错**。流程：在 `origin resource/backend` 装好依赖和 pyinstaller → `pyinstaller --noconfirm chatbot-backend.spec` → 用 `CHATBOT_DATA_DIR=<临时目录>` 起一次确认 `/api/settings` 返回 200（单文件 exe 冷启动要几十秒）→ 拷到 `source/backend/`。
 - 改字段的顺序：后端 `database.py` 的 `DEFAULT_SETTINGS` 或表结构 → `frontend/src/types/index.ts` → store → 组件。别用 `any` 绕过类型报错。
 - API Key 不要写进代码、日志或提交。`backend/logging_config.py` 有脱敏（`redact`、`mask_secret`），新增日志字段要确认经过它。
 - 排查桌面端闪退／打不开：软件异常退出后下次启动会自动把日志打包到 `%LOCALAPPDATA%\AI Chatbot\data\logs\diagnostics\未处理-YYYY-MM-DD-HHMMSS\`（**文件夹不是 zip**），先读里面的 `环境信息.txt`。实现在 `source/desktop/diagnostics-archive.cjs`，它**刻意不依赖后端**（闪退时后端多半没起来），改这块别把 `/api/diagnostics/bundle` 依赖加回去，细节见 [07 §2.1](origin%20resource/docs/07-桌面端与打包.md)。
@@ -38,4 +40,4 @@
 - 运行 `source/release/` 里的安装包（会覆盖已安装版本）。
 - 删除或覆盖 `release/` 里的历史安装包。
 - 改数据库表结构（会影响用户已有的 `%LOCALAPPDATA%\AI Chatbot\data\chatbot.db`）。
-- 提交或推送（除非用户明确要求）。
+- 提交或推送（除非用户明确要求）。**「改源码提交」这句口令是明确要求**：听到它就把公开库源码同步 + 提交 + 推送一路做完，不用再逐步确认（见 08 §2.1）。

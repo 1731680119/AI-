@@ -16,6 +16,7 @@ export function Sidebar() {
   const loadConversations = useStore((s) => s.loadConversations)
   const setMode = useStore((s) => s.setMode)
   const selectImage = useStore((s) => s.selectImage)
+  const newImageDraft = useStore((s) => s.newImageDraft)
   const removeImage = useStore((s) => s.removeImage)
   const loadImages = useStore((s) => s.loadImages)
 
@@ -130,7 +131,7 @@ export function Sidebar() {
           新建对话
         </button>
       ) : (
-        <button className="new-chat-btn" onClick={() => selectImage(null)}>
+        <button className="new-chat-btn" onClick={newImageDraft}>
           <ImagePlus size={16} />
           新建图片
         </button>

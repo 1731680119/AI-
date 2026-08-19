@@ -108,6 +108,15 @@
 }
 .image-textarea:focus { outline: none; border-color: var(--accent); }
 .image-upload-zone { margin-bottom: 4px; }
+/* 拖拽高亮：主图区和参考图区共用一套观感，靠内层元素的边框来表现。 */
+.image-upload-zone.drag-over .upload-placeholder,
+.image-upload-zone.drag-over .image-upload-preview img {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.image-upload-zone.drag-over .upload-placeholder {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-input));
+}
 .upload-placeholder {
   width: 100%;
   display: flex;
@@ -148,6 +157,19 @@
   flex-direction: column;
   gap: 10px;
 }
+/* 参考图满 4 张时「添加参考图」按钮会消失，所以高亮要落在整个区域上，
+   否则拖进来看不到任何反馈。用 outline 而不是 border，避免撑动布局。 */
+.reference-zone.drag-over {
+  outline: 1.5px dashed var(--accent);
+  outline-offset: 6px;
+  border-radius: 10px;
+}
+.reference-zone.drag-over .reference-add {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-input));
+}
+.reference-zone.drag-over .reference-hint { color: var(--accent); }
 .reference-list {
   display: flex;
   flex-direction: column;

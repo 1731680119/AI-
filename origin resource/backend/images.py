@@ -170,11 +170,12 @@ def edit_image(
 
 
 def _size_kwargs(size: str) -> dict:
-    """size 为空表示「跟随原图」：整个参数不传给上游，让接口按原图尺寸输出。
+    """size 为空表示「跟随原图」：传 size="auto" 让接口按原图尺寸输出。
 
-    注意不能传 size=""，多数接口会当成非法值报错。
+    注意不能传 size=""，多数接口会当成非法值报错；也不能整个参数不传——
+    有的上游会直接回 400「请传递 size 参数，支持 auto 或具体图片宽高」。
     """
-    return {"size": size} if size else {}
+    return {"size": size or "auto"}
 
 
 def _named_buffer(data: bytes, name: str, fallback: str) -> io.BytesIO:
