@@ -473,7 +473,7 @@
     heading.textContent = '多 API 与 DeepSeek'
     const description = document.createElement('div')
     description.className = 'hint enh-section-hint'
-    description.textContent = '按列表顺序为模型查找可用 API；按住卡片左上角的 ⋮⋮ 手柄可拖动调整顺序。API Key 使用 Windows 安全存储加密。'
+    description.textContent = '按列表顺序为模型查找可用 API；按住卡片左上角的 ⋮⋮ 手柄可拖动调整顺序。API Key 以明文保存在本地配置文件中，以便多台电脑间同步。'
     const list = document.createElement('div')
     list.className = 'enh-api-list'
 
@@ -545,7 +545,7 @@
         keyControls.className = 'enh-key-controls'
         const key = document.createElement('input')
         key.type = 'password'
-        key.placeholder = api.hasKey ? '已加密保存；留空表示不修改' : 'sk-…'
+        key.placeholder = api.hasKey ? '已保存；留空表示不修改' : 'sk-…'
         key.addEventListener('input', () => { api.apiKey = key.value })
         const reveal = document.createElement('button')
         reveal.type = 'button'

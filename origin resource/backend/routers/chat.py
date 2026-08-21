@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 import context_service
 import database as db
 import llm
+import logging_config as diag
 import memory
 import tools
 
@@ -156,6 +157,28 @@ def chat(body: ChatBody):
         content = ""
         thinking = ""
         tool_calls: list = []
+        persisted = False
+
+        def persist() -> None:
+            # 把当前已累积的内容落库。无论流是正常结束还是被用户中途中断
+            # （客户端断开会让本生成器在 yield 处收到 GeneratorExit），都必须执行，
+            # 否则中断时已经生成出来的正文会全部丢失，只剩一条空回答。
+            final_content = content
+            final_thinking = thinking
+            final_tools = tool_calls
+            if continue_target:
+                # 续写直接拼在原文后面：模型是从断点处接着写的，中间不加分隔。
+                final_content = continue_target["content"] + content
+                final_thinking = "\n\n".join(
+                    part for part in (continue_target.get("thinking"), thinking) if part
+                )
+                final_tools = (continue_target.get("tool_calls") or []) + tool_calls
+            db.update_message(
+                assistant["id"],
+                content=final_content,
+                thinking=final_thinking or None,
+                tool_calls=final_tools,
+            )
 
         # 每个工具各自判断是否可用，没配好的（如缺搜索密钥）不会声明给模型。
         tool_schemas = tools.available_schemas(settings)
@@ -167,44 +190,61 @@ def chat(body: ChatBody):
             def run_tool(name, arguments):
                 return (yield from tools.execute(settings, name, arguments, tool_context))
 
-        for event in llm.stream_chat(
-            settings, model, api_messages, tool_schemas=tool_schemas, run_tool=run_tool,
-            effort=llm.reasoning_effort(settings, body.thinking),
-        ):
-            if event["type"] == "done":
-                content = event["content"]
-                thinking = event["thinking"]
-                tool_calls = event.get("tool_calls") or []
-            yield sse(event)
+        try:
+            last_flush = 0
+            for event in llm.stream_chat(
+                settings, model, api_messages, tool_schemas=tool_schemas, run_tool=run_tool,
+                effort=llm.reasoning_effort(settings, body.thinking),
+            ):
+                # 实时累积：即使没等到 done 事件就被中断，也已经攒下了正文和思考。
+                # done 到达时再用它的权威全量值覆盖一遍。
+                if event["type"] == "content":
+                    content += event.get("text") or ""
+                elif event["type"] == "thinking":
+                    thinking += event.get("text") or ""
+                elif event["type"] == "done":
+                    content = event["content"]
+                    thinking = event["thinking"]
+                    tool_calls = event.get("tool_calls") or []
+                yield sse(event)
+                # 增量落库：客户端中断时，Starlette 在线程池里迭代本同步生成器，
+                # 不会及时向它抛 GeneratorExit，下面 finally 的兜底要等 GC 才触发。
+                # 所以必须边流边存——每多攒够一批字符就写一次库，这样中断后库里
+                # 至少留着最后一次刷新的内容，不至于整段正文全部丢光。
+                produced = len(content) + len(thinking)
+                if produced - last_flush >= 200:
+                    persist()
+                    last_flush = produced
 
-        if continue_target:
-            # 续写直接拼在原文后面：模型是从断点处接着写的，中间不加分隔。
-            content = continue_target["content"] + content
-            thinking = "\n\n".join(
-                part for part in (continue_target.get("thinking"), thinking) if part
-            )
-            tool_calls = (continue_target.get("tool_calls") or []) + tool_calls
+            # 只有正常跑完（没被中断）才走到这里：落库并生成标题。
+            persist()
+            persisted = True
 
-        db.update_message(
-            assistant["id"],
-            content=content,
-            thinking=thinking or None,
-            tool_calls=tool_calls,
-        )
+            if is_first_message and body.content:
+                # 标题生成失败不应阻塞回答，因此放到独立线程并设置最长等待时间。
+                title_thread = threading.Thread(
+                    target=lambda: db.rename_conversation(
+                        conversation_id,
+                        llm.generate_title(settings, model, body.content),
+                    ),
+                    daemon=True,
+                )
+                title_thread.start()
+                title_thread.join(timeout=15)
+                conversations = {item["id"]: item for item in db.list_conversations()}
+                title = conversations.get(conversation_id, {}).get("title")
+                yield sse({"type": "title", "title": title})
+        finally:
+            # 被中断时上面的 persist() 没机会执行，这里兜底保存已生成的部分。
+            # persist 本身出错不能再往外抛，否则会掩盖真正的 GeneratorExit。
+            if not persisted:
+                try:
+                    persist()
+                except Exception as error:  # noqa: BLE001
+                    diag.log_exception(
+                        "backend.chat", "中断后保存部分回答失败", error,
+                        conversation_id=conversation_id,
+                    )
 
-        if is_first_message and body.content:
-            # 标题生成失败不应阻塞回答，因此放到独立线程并设置最长等待时间。
-            title_thread = threading.Thread(
-                target=lambda: db.rename_conversation(
-                    conversation_id,
-                    llm.generate_title(settings, model, body.content),
-                ),
-                daemon=True,
-            )
-            title_thread.start()
-            title_thread.join(timeout=15)
-            conversations = {item["id"]: item for item in db.list_conversations()}
-            title = conversations.get(conversation_id, {}).get("title")
-            yield sse({"type": "title", "title": title})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
