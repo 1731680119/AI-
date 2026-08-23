@@ -218,6 +218,16 @@
   gap: 6px;
 }
 .sidebar-footer button:hover { background: var(--bg-hover); color: var(--text); }
+/* 有新版本时「设置」上的小红点。只是提示，不拦路。 */
+.sidebar-footer button.has-update { color: var(--text); }
+.nav-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex: none;
+}
+.settings-nav-item .nav-dot { margin-left: auto; }
 
 /* ============ 顶栏 ============ */
 .topbar {

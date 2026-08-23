@@ -9,3 +9,6 @@ python-docx>=1.1,<2
 openpyxl>=3.1,<4
 python-pptx>=1.0,<2
 Pillow>=10.4,<12
+# 图片导出的 HEIC / AVIF 编解码。纯 wheel，会被 PyInstaller 打进 exe，
+# 用户不需要自己装任何东西。装不上时 image_export 会自动降级（少两个格式）。
+pillow-heif>=1.5,<2

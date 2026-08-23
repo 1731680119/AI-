@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react'
 import {
   Activity, AlertTriangle, Brain, CheckCircle2, Globe, Image, LayoutTemplate, ListChecks, Loader2,
-  MessageSquare, Paperclip, Palette, Plus, Server, Trash2, X, XCircle,
+  MessageSquare, Paperclip, Palette, Plus, RefreshCw, Server, Trash2, X, XCircle,
 } from 'lucide-react'
 import { useStore } from '../../../store'
 import { testSearchProvider } from '../../../services/api'
+import { useUpdateState } from '../../../hooks/useUpdateState'
 import type {
   ChatStyle, PromptTemplate, SearchProvider, SearchTestResult, Settings,
 } from '../../../types'
 import { DiagnosticsPanel } from '../../diagnostics/components/DiagnosticsPanel'
 import { MemoryPanel } from './MemoryPanel'
 import { ModelPicker } from './ModelPicker'
+import { UpdatePanel } from './UpdatePanel'
 import type { ModelSource } from './ModelPicker'
 
 /** 桌面端「多 API」里的一条上游。密钥加密存在主进程，这里只知道有没有。 */
@@ -35,7 +37,7 @@ const isDesktop = () => Boolean((window as unknown as { chatbotDesktop?: unknown
 
 type SectionKey =
   | 'chat' | 'api' | 'context' | 'search' | 'memory'
-  | 'styles' | 'templates' | 'files' | 'images' | 'diagnostics'
+  | 'styles' | 'templates' | 'files' | 'images' | 'diagnostics' | 'about'
 
 const SECTIONS: { key: SectionKey; label: string; icon: typeof MessageSquare; desktopOnly?: boolean }[] = [
   { key: 'chat', label: '聊天', icon: MessageSquare },
@@ -48,6 +50,7 @@ const SECTIONS: { key: SectionKey; label: string; icon: typeof MessageSquare; de
   { key: 'files', label: '附件', icon: Paperclip },
   { key: 'images', label: '图片生成', icon: Image },
   { key: 'diagnostics', label: '诊断', icon: Activity },
+  { key: 'about', label: '关于与更新', icon: RefreshCw },
 ]
 
 /** 设置弹窗使用 draft 暂存编辑，只有点击保存才写入后端。 */
@@ -69,6 +72,8 @@ export function SettingsModal() {
   // 桌面端「多 API」里的上游列表。聊天用的地址和密钥被那一栏接管，
   // 「聊天」栏里的两个输入框是空的（且被隐藏），所以模型清单得问它要。
   const [desktopApis, setDesktopApis] = useState<DesktopApiEntry[]>([])
+  // 「关于与更新」那一栏的红点。面板自己也订阅一份，两处互不影响。
+  const { hasUpdate } = useUpdateState()
 
   useEffect(() => {
     if (settingsOpen && settings) {
@@ -286,6 +291,7 @@ export function SettingsModal() {
               >
                 <Icon size={15} />
                 <span>{label}</span>
+                {key === 'about' && hasUpdate && <span className="nav-dot" aria-label="有新版本" />}
               </button>
             ))}
           </nav>
@@ -940,6 +946,11 @@ export function SettingsModal() {
             <section className="settings-pane" hidden={section !== 'diagnostics'}>
               <h3 className="settings-section-title">诊断</h3>
               <DiagnosticsPanel />
+            </section>
+
+            <section className="settings-pane" hidden={section !== 'about'}>
+              <h3 className="settings-section-title">关于与更新</h3>
+              <UpdatePanel />
             </section>
           </div>
         </div>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Search, MessageSquarePlus, Pencil, Trash2, Settings as SettingsIcon, Import, PanelLeftClose, MessageSquare, Palette, ImagePlus, FolderPlus, Folder, FolderOpen } from 'lucide-react'
 import { useStore } from '../../store'
 import { migrateOldData, migrateOldImages, imageFileUrl, searchConversations } from '../../services/api'
+import { useUpdateState } from '../../hooks/useUpdateState'
 import type { MessageSearchHit } from '../../types'
 
 /** 左侧导航：统一管理聊天历史、图片历史和两个模式之间的切换。 */
@@ -18,6 +19,8 @@ export function Sidebar() {
   const selectImage = useStore((s) => s.selectImage)
   const newImageDraft = useStore((s) => s.newImageDraft)
   const removeImage = useStore((s) => s.removeImage)
+  // 有新版本时给底部的「设置」加一个红点，不弹窗打断。
+  const { hasUpdate } = useUpdateState()
   const loadImages = useStore((s) => s.loadImages)
 
   const projects = useStore((s) => s.projects)
@@ -312,9 +315,14 @@ export function Sidebar() {
           <Import size={14} />
           {migrating ? '导入中…' : '导入旧数据'}
         </button>
-        <button onClick={() => setSettingsOpen(true)}>
+        <button
+          className={hasUpdate ? 'has-update' : ''}
+          onClick={() => setSettingsOpen(true)}
+          title={hasUpdate ? '有新版本可用，去「关于与更新」查看' : '设置'}
+        >
           <SettingsIcon size={14} />
           设置
+          {hasUpdate && <span className="nav-dot" aria-label="有新版本" />}
         </button>
       </div>
     </aside>

@@ -1,5 +1,5 @@
 import type { ImageRecord } from '../../types'
-import { API_BASE, requestJson, requestVoid } from './http'
+import { API_BASE, requestBlob, requestJson, requestVoid } from './http'
 
 export interface GenerateImageRequest {
   prompt: string
@@ -59,5 +59,48 @@ export function imageFileUrl(name: string): string {
 
 export function migrateOldImages(): Promise<{ imported: number }> {
   return requestJson('/images/migrate', { method: 'POST' })
+}
+
+/**
+ * 一种可导出的格式。清单由后端探测得到——同一份代码在不同机器上
+ * 未必都能编码 HEIC/AVIF，写死在前端会让用户点到必然失败的选项。
+ */
+export interface ExportFormat {
+  key: string
+  label: string
+  ext: string
+  mime: string
+  /** 是否保留透明通道。false 时导出前要把透明区填成背景色。 */
+  alpha: boolean
+  /** 是否有「质量」参数。 */
+  quality: boolean
+  /** 是否有 DPI 参数。 */
+  dpi: boolean
+  /** 是否有压缩方式参数（目前只有 TIFF）。 */
+  compression: boolean
+  note: string
+}
+
+export interface ExportImageRequest {
+  name: string
+  format: string
+  quality?: number
+  tiff_compression?: string
+  dpi?: number
+  background?: string
+  width?: number | null
+  height?: number | null
+}
+
+export function listExportFormats(): Promise<{ formats: ExportFormat[] }> {
+  return requestJson('/images/export/formats')
+}
+
+export function exportImage(body: ExportImageRequest): Promise<{ blob: Blob; filename: string }> {
+  return requestBlob('/images/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
 }
 

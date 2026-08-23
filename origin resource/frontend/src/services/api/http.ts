@@ -71,3 +71,36 @@ export async function requestVoid(url: string, init?: RequestInit): Promise<void
   const response = await send(url, init)
   if (!response.ok) throw await failure(response)
 }
+
+/**
+ * 从 Content-Disposition 里取文件名。
+ *
+ * 后端为中文名同时给了 `filename`（ASCII 兜底）和 `filename*`（RFC 5987 百分号编码），
+ * 优先用后者，取不到再退回前者，都没有就交给调用方自己起名。
+ */
+function parseFilename(header: string | null): string {
+  if (!header) return ''
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header)
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded[1])
+    } catch {
+      /* 编码坏了就往下走 ASCII 兜底 */
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(header)
+  return plain ? plain[1] : ''
+}
+
+/** 下载类接口：拿回二进制内容和后端建议的文件名。 */
+export async function requestBlob(
+  url: string,
+  init?: RequestInit,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await send(url, init)
+  if (!response.ok) throw await failure(response)
+  return {
+    blob: await response.blob(),
+    filename: parseFilename(response.headers.get('Content-Disposition')),
+  }
+}

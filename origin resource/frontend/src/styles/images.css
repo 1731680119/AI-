@@ -380,22 +380,62 @@
   background: var(--bg-code);
 }
 .image-card img { width: 100%; display: block; }
-.image-card .download-btn {
+/* 卡片右上角的操作组：导出 + 下载原图。悬停才浮现，别挡住画面。 */
+.image-card-actions {
   position: absolute;
   top: 8px;
   right: 8px;
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.image-card:hover .image-card-actions,
+.image-card-actions:focus-within { opacity: 1; }
+.image-card .card-action-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 30px;
   height: 30px;
+  border: none;
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  opacity: 0;
-  transition: opacity 0.15s;
+  cursor: pointer;
 }
-.image-card:hover .download-btn { opacity: 1; }
+.image-card .card-action-btn:hover { background: rgba(0, 0, 0, 0.78); }
+
+/* ============ 图片导出对话框 ============ */
+/* shared-components.css 里 `.field input` 一律 width:100%，颜色选择器被撑成
+   整行会很难看（和 §5 里 checkbox 那个坑同源），这里作用域内压回去。 */
+.image-export .export-bg-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.image-export .export-bg-row input[type='color'] {
+  width: 46px;
+  height: 30px;
+  padding: 2px;
+  cursor: pointer;
+}
+.image-export .export-bg-row span {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.image-export .export-error,
+.image-export .export-notice {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+.image-export .export-error { color: var(--danger, #e5534b); }
+.image-export .export-notice { color: var(--text-secondary); }
+.image-export .export-source { font-size: 12px; color: var(--text-muted); }
+.image-export .modal-footer .btn { display: flex; align-items: center; gap: 6px; }
 
 /* 设置面板图片分区 */
 .settings-divider {

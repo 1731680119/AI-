@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Sparkles, Wand2, Upload, X, Download, Loader2, ImagePlus } from 'lucide-react'
+import { Sparkles, Wand2, Upload, X, Download, FileOutput, Loader2, ImagePlus } from 'lucide-react'
 import { useStore } from '../../../store'
 import { imageFileUrl } from '../../../services/api'
 import { useFileDrop } from '../../../hooks/useFileDrop'
+import { ExportDialog } from './ExportDialog'
 
 /** 参考图上限，与后端 MAX_REFERENCE_IMAGES 保持一致。 */
 const MAX_REFERENCES = 4
@@ -38,6 +39,8 @@ export function ImagePage() {
   const [refHint, setRefHint] = useState('')
   // 空字符串表示「跟随原图」：不向上游传 size，输出保持原图尺寸与比例。
   const [editSize, setEditSize] = useState('')
+  // 正在导出的图片文件名，null 表示没开导出对话框。
+  const [exporting, setExporting] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const refInput = useRef<HTMLInputElement>(null)
 
@@ -181,18 +184,28 @@ export function ImagePage() {
             {selected.files.map((name) => (
               <figure key={name} className="image-card">
                 <img src={imageFileUrl(name)} alt={selected.prompt} />
-                <a
-                  className="download-btn"
-                  href={imageFileUrl(name)}
-                  download={name}
-                  title="下载"
-                >
-                  <Download size={15} />
-                </a>
+                <div className="image-card-actions">
+                  <button
+                    className="card-action-btn"
+                    onClick={() => setExporting(name)}
+                    title="导出为其它格式（TIFF / JPEG / PDF…）"
+                  >
+                    <FileOutput size={15} />
+                  </button>
+                  <a
+                    className="card-action-btn download-btn"
+                    href={imageFileUrl(name)}
+                    download={name}
+                    title="下载原图"
+                  >
+                    <Download size={15} />
+                  </a>
+                </div>
               </figure>
             ))}
           </div>
         </div>
+        {exporting && <ExportDialog name={exporting} onClose={() => setExporting(null)} />}
       </div>
     )
   }

@@ -24,6 +24,16 @@ contextBridge.exposeInMainWorld('chatbotDesktop', {
   openDiagnosticsFolder: () => ipcRenderer.invoke('desktop:diagnostics-open-archive-dir'),
   exportDiagnosticsBundle: () => ipcRenderer.invoke('desktop:diagnostics-export-bundle'),
   copyToClipboard: (text) => ipcRenderer.invoke('desktop:diagnostics-copy', text),
+  saveBinaryFile: (payload) => ipcRenderer.invoke('desktop:save-binary', payload),
+  getUpdateState: () => ipcRenderer.invoke('desktop:update-state'),
+  checkForUpdate: () => ipcRenderer.invoke('desktop:update-check'),
+  downloadUpdate: () => ipcRenderer.invoke('desktop:update-download'),
+  installUpdate: () => ipcRenderer.invoke('desktop:update-install'),
+  onUpdateState: (callback) => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('desktop:update-state', listener)
+    return () => ipcRenderer.removeListener('desktop:update-state', listener)
+  },
   onDeepseekTabs: (callback) => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('desktop:deepseek-tabs', listener)

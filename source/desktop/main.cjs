@@ -22,6 +22,7 @@ const path = require('node:path')
 
 const diag = require('./diagnostics-logger.cjs')
 const archive = require('./diagnostics-archive.cjs')
+const updater = require('./updater.cjs')
 
 const APP_NAME = 'AI Chatbot'
 const CLOSE_DELAY_MS = 5000
@@ -1055,6 +1056,56 @@ ipcMain.handle('desktop:diagnostics-copy', (event, text) => {
 })
 
 /**
+ * 图片导出落盘：渲染进程把转换好的字节丢过来，这里弹保存对话框写文件。
+ *
+ * 没走 `<a download>` 是因为那条路径由 Chromium 决定要不要弹框，
+ * 大概率直接扔进「下载」目录；导出这种操作用户是要挑位置的。
+ */
+ipcMain.handle('desktop:save-binary', async (event, payload = {}) => {
+  const { data, filename = 'export.png', extension = 'png', label = '图片' } = payload
+  const window = BrowserWindow.fromWebContents(event.sender)
+  const options = {
+    title: '导出图片',
+    defaultPath: path.join(app.getPath('downloads'), filename),
+    filters: [
+      { name: label, extensions: [extension] },
+      { name: '所有文件', extensions: ['*'] },
+    ],
+  }
+  const { canceled, filePath } = window
+    ? await dialog.showSaveDialog(window, options)
+    : await dialog.showSaveDialog(options)
+  if (canceled || !filePath) return { saved: false, reason: 'canceled' }
+  try {
+    fs.writeFileSync(filePath, Buffer.from(data))
+    diag.info('images', '已导出图片', { path: filePath, bytes: Buffer.byteLength(Buffer.from(data)) })
+    return { saved: true, path: filePath }
+  } catch (error) {
+    diag.error('images', `导出图片失败：${error.message}`)
+    return { saved: false, reason: error.message }
+  }
+})
+
+/** 把更新状态推给所有窗口。窗口自己挂载时也会主动拉一次，两条路都要留着。 */function broadcastUpdateState(payload) {
+  for (const record of windows.values()) {
+    if (!record.window.isDestroyed()) record.window.webContents.send('desktop:update-state', payload)
+  }
+}
+
+/**
+ * 更新安装前的收尾。
+ *
+ * 只把 isQuitting 立起来：窗口的 close 处理器会因此直接放行，不再弹「最小化到托盘还是退出」。
+ * 停后端、写干净退出标记这些交给 before-quit 统一做，别在这里重复一遍。
+ */
+function prepareQuitForUpdate() {
+  isQuitting = true
+  cancelScheduledShutdown()
+}
+
+updater.registerIpc({ beforeQuit: prepareQuitForUpdate })
+
+/**
  * 上次异常退出后的提示。
  *
  * 顺序是先打包再弹窗：闪退时后端多半没起来，等用户点按钮才打包很可能又赶上一次崩溃，
@@ -1231,6 +1282,7 @@ if (hasSingleInstanceLock) {
         }])
       }
       createWindow()
+      updater.init(broadcastUpdateState)
       if (!lastRun.wasClean) promptLastRunCrashed(lastRun)
       // 清理放在窗口出来之后，纯磁盘操作不该拖慢启动；每天最多跑一次由模块内部把关。
       const swept = archive.cleanup(diag.paths().logDir)

@@ -8,7 +8,7 @@
 以 `chatbot-backend.exe --port <port>` 方式启动并接管 stdout/stderr）。
 """
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 hiddenimports = [
     # uvicorn 的实现模块大多是运行时按字符串加载的
@@ -45,6 +45,18 @@ hiddenimports = [
     "PIL.Image",
     "PIL.ImageOps",
     "PIL.ImageDraw",
+    # 图片导出（image_export.py）用到的编码器。PIL 的插件是运行时按需 import 的，
+    # 静态分析看不到；pillow_heif 还带着 libheif 的二进制，必须显式带上。
+    "PIL.TiffImagePlugin",
+    "PIL.BmpImagePlugin",
+    "PIL.GifImagePlugin",
+    "PIL.IcoImagePlugin",
+    "PIL.PdfImagePlugin",
+    "PIL.WebPImagePlugin",
+    "PIL.JpegImagePlugin",
+    "PIL.PngImagePlugin",
+    "pillow_heif",
+    "image_export",
     "multipart",
     "python_multipart",
     "sqlite3",
@@ -68,12 +80,16 @@ hiddenimports = [
 
 # python-pptx 会读自带的默认模板和一批 XML 资源，纯 hiddenimports 带不进来。
 datas = collect_data_files("pptx")
+# pillow-heif 的 libheif / aom 等动态库放在包目录里，同样得整包捞进来，
+# 否则打出来的 exe 一导出 HEIC/AVIF 就报找不到编码器。
+binaries = collect_dynamic_libs("pillow_heif")
+datas += collect_data_files("pillow_heif")
 
 
 a = Analysis(
     ["desktop_server.py"],
     pathex=["."],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

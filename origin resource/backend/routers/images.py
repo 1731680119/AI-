@@ -1,12 +1,14 @@
 """图片生成、编辑、历史记录和文件读取接口。"""
 import json
 import os
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 import database as db
+import image_export
 import images as image_service
 
 
@@ -136,6 +138,49 @@ def delete_image(record_id: str):
     filenames = db.delete_image_record(record_id)
     image_service.delete_files(filenames)
     return {"ok": True}
+
+
+class ExportBody(BaseModel):
+    """导出参数。除 name / format 外都有默认值，前端只传用户真正调过的项。"""
+
+    name: str
+    format: str
+    quality: int = 92
+    tiff_compression: str = "lzw"
+    dpi: int = image_export.DEFAULT_DPI
+    background: str = "#FFFFFF"
+    width: int | None = None
+    height: int | None = None
+
+
+@router.get("/export/formats")
+def list_export_formats():
+    """当前环境真正能编码出来的格式。前端拿它渲染下拉，不写死清单。"""
+    return {"formats": list(image_export.available_formats())}
+
+
+@router.post("/export")
+def export_image(body: ExportBody):
+    safe_name = os.path.basename(body.name)
+    source = os.path.join(image_service.IMAGES_DIR, safe_name)
+    try:
+        data, filename, mime = image_export.convert(
+            source,
+            body.format,
+            quality=body.quality,
+            tiff_compression=body.tiff_compression,
+            dpi=body.dpi,
+            background=body.background,
+            width=body.width,
+            height=body.height,
+        )
+    except image_export.ExportError as error:
+        raise HTTPException(400, str(error)) from error
+    except Exception as error:  # noqa: BLE001 - 兜底，别把 Pillow 的原始异常抛成 500 堆栈
+        raise HTTPException(500, f"图片导出失败：{error}") from error
+    # 文件名可能含中文，filename* 用 RFC 5987 编码，filename 留一份 ASCII 兜底。
+    disposition = f"attachment; filename=\"export.{filename.rsplit('.', 1)[-1]}\"; filename*=UTF-8''{quote(filename)}"
+    return Response(content=data, media_type=mime, headers={"Content-Disposition": disposition})
 
 
 @router.get("/file/{name}")
