@@ -438,7 +438,6 @@
     }
     return document.scrollingElement || document.documentElement
   }
-
   function stepDragScroll() {
     dragScroll.frame = 0
     if (!dragScroll.target || !dragScroll.speed) return
@@ -474,23 +473,169 @@
     if (speed && !dragScroll.frame) dragScroll.frame = requestAnimationFrame(stepDragScroll)
   }
 
-  // 监听器挂在 document 上而不是卡片上：drop 之后列表会整体重绘，
-  // 被拖的那张卡片已经从 DOM 里没了，它的 dragend 不一定还会触发。
-  function onDocumentDragOver(event) {
+  // 监听器挂在 document 上而不是卡片上：拖动过程中卡片会被平移，
+  // 指针可能已经不在它上面了，挂在卡片上会漏事件。
+  function onDocumentPointerMove(event) {
     updateDragScroll(event.clientY)
   }
 
   function beginDragScroll(node) {
     dragScroll.target = scrollableAncestor(node)
-    document.addEventListener('dragover', onDocumentDragOver, true)
+    document.addEventListener('pointermove', onDocumentPointerMove, true)
   }
 
   function stopDragScroll() {
-    document.removeEventListener('dragover', onDocumentDragOver, true)
+    document.removeEventListener('pointermove', onDocumentPointerMove, true)
     if (dragScroll.frame) cancelAnimationFrame(dragScroll.frame)
     dragScroll.frame = 0
     dragScroll.target = null
     dragScroll.speed = 0
+  }
+
+  /**
+   * 指针拖动排序。
+   *
+   * 为什么不用 HTML5 drag&drop：它的拖影是浏览器截的静态位图，改不了大小和
+   * 透明度，也没法让下面的项目实时让位——要「缩小半透明跟随鼠标 + 原位留占位框
+   * + 相邻项被顶开」这套效果，只能自己接指针事件。
+   *
+   * 交互约定：
+   * - 只有在手柄（`handleSelector`）上按下才起拖，否则卡片里的输入框没法选中文本。
+   * - 指针移动超过 `DRAG_THRESHOLD` 才真正开始，避免「想点一下」被判成拖动。
+   * - 被拖的那项原地留下，降透明度当占位框；另外克隆一份缩小后跟随指针。
+   * - 其余项按指针**越过中线**判定让位（`transform` 平移，带过渡），
+   *   松手时按最终落点写回顺序。
+   *
+   * 中线判定用的是**元素原始位置**（`baseTop`，进入拖动时快照的），不是实时的
+   * `getBoundingClientRect()`——后者已经被让位的 transform 改过了，拿它算会来回抖。
+   *
+   * `options.onReorder(from, to)` 在顺序真的变了时调用；`items()` 返回参与排序的
+   * 元素数组（顺序即当前顺序）。
+   */
+  const DRAG_THRESHOLD = 4
+
+  function makeSortable(container, { handleSelector, onReorder }) {
+    container.addEventListener('pointerdown', (event) => {
+      // 只响应主键；右键和中键交给默认行为。
+      if (event.button !== 0) return
+      const handle = event.target.closest(handleSelector)
+      if (!handle || !container.contains(handle)) return
+      const source = handle.closest('[data-sort-index]')
+      if (!source) return
+
+      const items = [...container.querySelectorAll('[data-sort-index]')]
+      const fromIndex = items.indexOf(source)
+      if (fromIndex < 0) return
+
+      const startX = event.clientX
+      const startY = event.clientY
+      let started = false
+      let ghost = null
+      let toIndex = fromIndex
+      let offsetX = 0
+      let offsetY = 0
+      // 每一项的原始位置和高度，进入拖动时快照一次。
+      let layout = []
+      // 让位时相邻项要移动的距离 = 被拖项高度 + 列表间距。
+      let shift = 0
+
+      const begin = () => {
+        started = true
+        const rect = source.getBoundingClientRect()
+        const gap = parseFloat(getComputedStyle(container).rowGap || '0') || 0
+        shift = rect.height + gap
+        layout = items.map((node) => {
+          const box = node.getBoundingClientRect()
+          return { node, baseTop: box.top, height: box.height }
+        })
+
+        // 跟随指针的那份：克隆而不是移动原节点，原节点要留在原位当占位框。
+        ghost = source.cloneNode(true)
+        ghost.classList.add('enh-sort-ghost')
+        ghost.style.width = `${rect.width}px`
+        ghost.style.height = `${rect.height}px`
+        document.body.appendChild(ghost)
+        offsetX = startX - rect.left
+        offsetY = startY - rect.top
+        moveGhost(startX, startY)
+
+        source.classList.add('enh-sort-placeholder')
+        for (const node of items) node.classList.add('enh-sort-shifting')
+        document.body.classList.add('enh-sorting')
+        beginDragScroll(container)
+      }
+
+      const moveGhost = (clientX, clientY) => {
+        // 缩到 0.94 并让缩放锚点跟着指针走，视觉上像是"抓起来了一点"。
+        ghost.style.transform =
+          `translate(${clientX - offsetX}px, ${clientY - offsetY}px) scale(.94)`
+      }
+
+      /**
+       * 按指针位置算出应该插到第几位，并把让位的 transform 刷上去。
+       *
+       * 用被拖项的**中心**跟其它项的中线比：指针位置本身取决于用户从卡片哪里
+       * 按下的手柄，用它会导致同样的视觉位置在不同卡片上判定不一致。
+       */
+      const updateOrder = (clientY) => {
+        const draggedCenter = clientY - offsetY + layout[fromIndex].height / 2
+        let next = fromIndex
+        for (let i = 0; i < layout.length; i += 1) {
+          if (i === fromIndex) continue
+          const middle = layout[i].baseTop + layout[i].height / 2
+          if (i < fromIndex && draggedCenter < middle) { next = Math.min(next, i); }
+          if (i > fromIndex && draggedCenter > middle) { next = Math.max(next, i); }
+        }
+        if (next === toIndex) return
+        toIndex = next
+        for (let i = 0; i < layout.length; i += 1) {
+          if (i === fromIndex) continue
+          // 往上拖：区间 [toIndex, fromIndex) 里的项整体下移一格；
+          // 往下拖：区间 (fromIndex, toIndex] 里的项整体上移一格。
+          let delta = 0
+          if (toIndex < fromIndex && i >= toIndex && i < fromIndex) delta = shift
+          if (toIndex > fromIndex && i > fromIndex && i <= toIndex) delta = -shift
+          layout[i].node.style.transform = delta ? `translateY(${delta}px)` : ''
+        }
+      }
+
+      const onMove = (moveEvent) => {
+        if (!started) {
+          const moved = Math.abs(moveEvent.clientX - startX) + Math.abs(moveEvent.clientY - startY)
+          if (moved < DRAG_THRESHOLD) return
+          begin()
+        }
+        moveEvent.preventDefault()
+        moveGhost(moveEvent.clientX, moveEvent.clientY)
+        updateOrder(moveEvent.clientY)
+      }
+
+      const finish = (commit) => {
+        window.removeEventListener('pointermove', onMove, true)
+        window.removeEventListener('pointerup', onUp, true)
+        window.removeEventListener('pointercancel', onCancel, true)
+        if (!started) return
+        stopDragScroll()
+        ghost?.remove()
+        source.classList.remove('enh-sort-placeholder')
+        document.body.classList.remove('enh-sorting')
+        for (const item of layout) {
+          item.node.classList.remove('enh-sort-shifting')
+          item.node.style.transform = ''
+        }
+        // 顺序没变就不必重绘，省得输入框里正在编辑的内容被打断。
+        if (commit && toIndex !== fromIndex) onReorder(fromIndex, toIndex)
+      }
+
+      const onUp = () => finish(true)
+      const onCancel = () => finish(false)
+
+      window.addEventListener('pointermove', onMove, true)
+      window.addEventListener('pointerup', onUp, true)
+      window.addEventListener('pointercancel', onCancel, true)
+      // 阻止默认的文本选中——拖到一半整页高亮很难看。
+      event.preventDefault()
+    })
   }
 
   function settingsHost(body) {
@@ -519,6 +664,7 @@
       apiList: data.apiList.map((item) => ({ ...item, apiKey: '' })),
       apiTimeoutSeconds: data.apiTimeoutSeconds,
       deepseekUrl: data.deepseekUrl,
+      updateProxy: data.updateProxy || '',
       prompts: { ...data.prompts },
     }
 
@@ -545,56 +691,28 @@
     description.textContent = '按列表顺序为模型查找可用 API；按住卡片左上角的 ⋮⋮ 手柄可拖动调整顺序。API Key 以明文保存在本地配置文件中，以便多台电脑间同步。'
     const list = document.createElement('div')
     list.className = 'enh-api-list'
+    // 拖动排序只在这里挂一次：列表重绘换的是子节点，容器本身一直是同一个。
+    makeSortable(list, {
+      handleSelector: '.enh-drag-handle',
+      onReorder: (from, to) => {
+        const [moved] = draft.apiList.splice(from, 1)
+        draft.apiList.splice(to, 0, moved)
+        renderApiList()
+      },
+    })
 
     function renderApiList() {
       list.replaceChildren()
       draft.apiList.forEach((api, index) => {
         const card = document.createElement('div')
         card.className = 'enh-api-card'
-        // 默认不可拖动，只有在左上角手柄上按下鼠标时才临时开启，
-        // 否则卡片内的输入框无法选中文本。
-        card.draggable = false
-        card.dataset.index = String(index)
-        card.addEventListener('dragstart', (event) => {
-          if (!card.draggable) {
-            event.preventDefault()
-            return
-          }
-          event.dataTransfer.setData('text/plain', String(index))
-          event.dataTransfer.effectAllowed = 'move'
-          beginDragScroll(list)
-        })
-        card.addEventListener('dragend', () => {
-          card.draggable = false
-          stopDragScroll()
-        })
-        card.addEventListener('dragover', (event) => event.preventDefault())
-        card.addEventListener('drop', (event) => {
-          event.preventDefault()
-          stopDragScroll()
-          const from = Number(event.dataTransfer.getData('text/plain'))
-          const to = index
-          if (!Number.isInteger(from) || from === to) return
-          const [moved] = draft.apiList.splice(from, 1)
-          draft.apiList.splice(to, 0, moved)
-          renderApiList()
-        })
+        card.dataset.sortIndex = String(index)
         const header = document.createElement('div')
         header.className = 'enh-api-header'
         const handle = document.createElement('span')
         handle.className = 'enh-drag-handle'
         handle.textContent = '⋮⋮'
         handle.title = '拖动排序'
-        handle.addEventListener('mousedown', () => {
-          card.draggable = true
-          // 松开鼠标即解除武装：无论是否真的发生了拖拽，
-          // 都不能让卡片保持可拖动状态，否则输入框又会被劫持。
-          const disarm = () => {
-            card.draggable = false
-            window.removeEventListener('mouseup', disarm, true)
-          }
-          window.addEventListener('mouseup', disarm, true)
-        })
         const enabledLabel = document.createElement('label')
         enabledLabel.className = 'enh-enabled'
         const enabled = document.createElement('input')
@@ -681,6 +799,12 @@
     const deepseek = createInput('DeepSeek 网页地址', draft.deepseekUrl, (value) => {
       draft.deepseekUrl = value
     }, { placeholder: 'https://chat.deepseek.com/' })
+    const updateProxy = createInput('更新代理（可选）', draft.updateProxy, (value) => {
+      draft.updateProxy = value
+    }, { placeholder: '127.0.0.1:7890，留空则自动探测' })
+    const updateProxyHint = document.createElement('div')
+    updateProxyHint.className = 'hint enh-section-hint'
+    updateProxyHint.textContent = '仅用于检查和下载更新：直连失败时会依次尝试 DoH 解析、镜像站，最后才用这里的代理。代理设置只在更新请求中生效，不会改动系统网络配置。'
 
     const promptHeading = document.createElement('h4')
     promptHeading.className = 'enh-prompt-heading'
@@ -702,7 +826,10 @@
       : '当前还没有已记住的模型/API 匹配。'
 
     renderApiList()
-    section.append(heading, description, list, add, timeout.field, deepseek.field, promptHeading)
+    section.append(
+      heading, description, list, add, timeout.field, deepseek.field,
+      updateProxy.field, updateProxyHint, promptHeading,
+    )
     for (const item of promptFields) section.appendChild(item.field)
     section.appendChild(matches)
     if (host.slot) host.slot.replaceChildren(section)

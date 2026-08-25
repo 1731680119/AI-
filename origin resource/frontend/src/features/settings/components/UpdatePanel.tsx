@@ -122,6 +122,11 @@ export function UpdatePanel() {
             </div>
           )}
 
+          {state.channel && (state.status === 'available' || state.status === 'downloading'
+            || state.status === 'downloaded') && (
+            <p className="update-hint">连接方式：{state.channel}</p>
+          )}
+
           <div className="update-actions">
             <button className="btn btn-ghost" disabled={busy} onClick={() => void check()}>
               <RefreshCw size={14} />
@@ -148,7 +153,8 @@ export function UpdatePanel() {
             </p>
           )}
           <p className="update-hint">
-            每次启动会在后台悄悄检查一次，不会打断你；有新版时侧边栏的「设置」上会出现一个红点。
+            只在启动时自动检查一次，之后要查请点上面的「检查更新」。有新版时侧边栏的「设置」上会出现一个红点。
+            连不上 GitHub 会自动尝试换个线路（DoH 解析、镜像站、代理），只作用于更新请求本身，不改动系统网络设置。
           </p>
         </>
       )}

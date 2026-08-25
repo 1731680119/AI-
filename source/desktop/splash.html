@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>AI Chatbot</title>
+<style>
+  /*
+   * 启动画面。刻意不引用任何外部资源（除了同目录的图标），
+   * 它要在后端起来之前就显示出来，那时候什么服务都还没有。
+   */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+    user-select: none;
+    cursor: default;
+    font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  }
+
+  .card {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding: 26px 28px 18px;
+    border-radius: 12px;
+    overflow: hidden;
+    color: #eef1f6;
+    background:
+      radial-gradient(120% 130% at 8% 0%, #2b3f6b 0%, transparent 55%),
+      radial-gradient(120% 130% at 100% 100%, #1d4f52 0%, transparent 52%),
+      linear-gradient(155deg, #171b24 0%, #10131a 100%);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .09);
+  }
+
+  /* 右上角的淡淡光晕，纯装饰，让纯色背景不至于太平。 */
+  .card::after {
+    content: "";
+    position: absolute;
+    top: -70px;
+    right: -50px;
+    width: 190px;
+    height: 190px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(120, 170, 255, .17), transparent 68%);
+    pointer-events: none;
+  }
+
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .logo {
+    width: 46px;
+    height: 46px;
+    flex: 0 0 auto;
+    border-radius: 11px;
+    background: rgba(255, 255, 255, .07);
+    box-shadow: 0 5px 18px rgba(0, 0, 0, .35);
+  }
+
+  .title {
+    font-size: 21px;
+    font-weight: 600;
+    letter-spacing: .4px;
+  }
+
+  .version {
+    margin-top: 3px;
+    font-size: 12px;
+    color: rgba(238, 241, 246, .5);
+  }
+
+  .spacer { flex: 1; }
+
+  /*
+   * 进度条是不确定型的：启动步骤的耗时差得太多（后端冷启动可能几十秒），
+   * 硬凑一个百分比只会让人以为卡住了，不如让它一直流动。
+   */
+  .bar {
+    position: relative;
+    height: 3px;
+    border-radius: 99px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, .1);
+  }
+
+  .bar::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    width: 38%;
+    border-radius: 99px;
+    background: linear-gradient(90deg, transparent, #6ea8ff 35%, #63d9c8 70%, transparent);
+    animation: slide 1.5s cubic-bezier(.5, 0, .5, 1) infinite;
+  }
+
+  @keyframes slide {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(325%); }
+  }
+
+  .status {
+    margin-top: 11px;
+    height: 17px;
+    font-size: 12.5px;
+    line-height: 17px;
+    color: rgba(238, 241, 246, .68);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* 后端冷启动慢时补的第二行说明，平时不占位。 */
+  .note {
+    margin-top: 2px;
+    height: 15px;
+    font-size: 11.5px;
+    line-height: 15px;
+    color: rgba(238, 241, 246, .38);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="head">
+      <img class="logo" src="assets/icon.ico" alt="" />
+      <div>
+        <div class="title">AI Chatbot</div>
+        <div class="version" id="version"></div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <div class="bar"></div>
+    <div class="status" id="status">正在启动…</div>
+    <div class="note" id="note"></div>
+  </div>
+<script>
+  // 主进程通过 executeJavaScript 调这两个函数，所以挂在 window 上。
+  window.setSplashStatus = function (text, note) {
+    document.getElementById('status').textContent = text || ''
+    document.getElementById('note').textContent = note || ''
+  }
+  window.setSplashVersion = function (version) {
+    document.getElementById('version').textContent = version ? '版本 ' + version : ''
+  }
+</script>
+</body>
+</html>

@@ -23,6 +23,7 @@ const path = require('node:path')
 const diag = require('./diagnostics-logger.cjs')
 const archive = require('./diagnostics-archive.cjs')
 const updater = require('./updater.cjs')
+const splash = require('./splash.cjs')
 
 const APP_NAME = 'AI Chatbot'
 const CLOSE_DELAY_MS = 5000
@@ -44,6 +45,9 @@ const DEFAULT_ENHANCEMENTS = {
   },
   modelApiMap: {},
   legacyApiMigrated: false,
+  // 检查更新时，直连和自动降级都失败后使用的 HTTP 代理地址（host:port）。
+  // 留空表示只用自动探测到的系统代理。见 net-fallback.cjs。
+  updateProxy: '',
 }
 
 if (process.env.LOCALAPPDATA) {
@@ -126,6 +130,7 @@ function normalizeEnhancements(value = {}) {
     apiTimeoutSeconds: Math.min(120, Math.max(3, Number(value.apiTimeoutSeconds) || 15)),
     prompts,
     modelApiMap: value.modelApiMap && typeof value.modelApiMap === 'object' ? value.modelApiMap : {},
+    updateProxy: typeof value.updateProxy === 'string' ? value.updateProxy.trim() : '',
   }
 }
 
@@ -224,6 +229,7 @@ function publicEnhancementSettings() {
     apiTimeoutSeconds: enhancements.apiTimeoutSeconds,
     deepseekUrl: enhancements.deepseekUrl,
     prompts: enhancements.prompts,
+    updateProxy: enhancements.updateProxy,
     modelMatches: Object.fromEntries(
       Object.entries(enhancements.modelApiMap)
         .filter(([, apiId]) => apiNames.has(apiId))
@@ -280,6 +286,7 @@ function saveEnhancementSettings(payload) {
     ...DEFAULT_ENHANCEMENTS.prompts,
     ...(payload.prompts || {}),
   }
+  enhancements.updateProxy = String(payload.updateProxy || '').trim()
   if (previousFingerprint !== apiFingerprint(apiList)) {
     enhancements.modelApiMap = {}
   }
@@ -399,6 +406,8 @@ function waitForBackend(url, timeoutMs = 300000) {
       if (!notified && waited > 20000) {
         notified = true
         diag.warn('backend', '后端启动较慢，仍在等待', { waitedMs: waited, url })
+        // 启动画面上补一句，否则用户只看到一行不动的「正在启动后端服务」。
+        splash.setStatus('正在启动后端服务…', '首次启动或刚升级时需要解包，可能要等待较久')
       }
       setTimeout(check, 200)
     }
@@ -466,6 +475,8 @@ async function startBackend() {
       { code, signal },
     )
     // 后端已经死了，日志发不出去，只能靠上面的同步兜底写入。
+    // 启动阶段就崩的话启动画面还在，且它是 alwaysOnTop，先收掉再弹框。
+    splash.close()
     dialog.showErrorBox(
       '后端已停止',
       `本地后端意外退出（代码 ${code ?? '未知'}）。请重新启动软件。\n\n日志目录：${diag.paths().logDir}`,
@@ -791,7 +802,12 @@ function createWindow() {
     activeDeepseekTabId: null,
   }
   windows.set(window.id, record)
-  window.once('ready-to-show', () => window.show())
+  window.once('ready-to-show', () => {
+    window.show()
+    // 先 show 再关启动画面：反过来桌面会空一帧，看着像闪了一下。
+    // close() 幂等，后续新建窗口走到这里只是空转。
+    splash.close()
+  })
   window.on('resize', () => updateDeepseekBounds(record))
   window.on('close', (event) => handleWindowClose(event, window))
   window.on('closed', () => {
@@ -1265,10 +1281,16 @@ if (hasSingleInstanceLock) {
       previousVersion: lastRun.previousVersion,
     })
     try {
+      // 启动画面要抢在 startBackend() 之前出来——后端冷启动几十秒，
+      // 在它就绪之前主窗口根本还没创建，屏幕上会一直空着。
+      splash.create()
+      splash.setStatus('正在准备配置…')
       migrateSettingsLocation()
       loadDesktopSettings()
       migrateLegacyData()
+      splash.setStatus('正在启动后端服务…')
       await startBackend()
+      splash.setStatus('正在迁移 API 设置…')
       await migrateLegacyApiSettings()
       installApplicationMenu()
       if (process.platform === 'win32') {
@@ -1281,8 +1303,9 @@ if (hasSingleInstanceLock) {
           description: '打开一个新的 AI Chatbot 窗口',
         }])
       }
+      splash.setStatus('正在加载界面…')
       createWindow()
-      updater.init(broadcastUpdateState)
+      updater.init(broadcastUpdateState, () => enhancements.updateProxy)
       if (!lastRun.wasClean) promptLastRunCrashed(lastRun)
       // 清理放在窗口出来之后，纯磁盘操作不该拖慢启动；每天最多跑一次由模块内部把关。
       const swept = archive.cleanup(diag.paths().logDir)
@@ -1290,6 +1313,8 @@ if (hasSingleInstanceLock) {
         diag.info('diagnostics', '已清理过期诊断文件夹', { count: swept.removed.length })
       }
     } catch (error) {
+      // 报错弹窗前先收掉启动画面：它是 alwaysOnTop 的，会压在对话框上面。
+      splash.close()
       diag.record('CRITICAL', 'lifecycle', `启动失败：${error.message}`, {}, { sync: true })
       diag.recordCrash('startupFailed', error.message, error.stack ?? '')
       diag.flushSync()

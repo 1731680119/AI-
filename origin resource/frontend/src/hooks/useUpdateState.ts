@@ -15,6 +15,8 @@ export interface UpdateState {
   bytesPerSecond: number
   error: string
   checkedAt: number
+  /** 本次是走哪条线路连上的：直连 / DoH 解析直连 / 镜像 xxx / 系统代理 xxx。 */
+  channel: string
 }
 
 interface UpdateBridge {
@@ -40,6 +42,7 @@ const INITIAL: UpdateState = {
   bytesPerSecond: 0,
   error: '',
   checkedAt: 0,
+  channel: '',
 }
 
 /**

@@ -6,6 +6,7 @@ import { AttachmentIcon } from '../attachmentIcon'
 import { useStore } from '../../../store'
 import { uploadFile } from '../../../services/api'
 import { useFileDrop } from '../../../hooks/useFileDrop'
+import { useSortableList } from '../../../hooks/useSortableList'
 import type { Attachment } from '../../../types'
 
 const THINKING_OPTIONS = ['auto', 'minimal', 'low', 'medium', 'high'] as const
@@ -156,6 +157,21 @@ export function Composer() {
 
   const model = settings?.default_model || ''
   const models = settings?.models || []
+
+  /**
+   * 模型菜单里的拖动排序。
+   *
+   * 顺序直接写回 `settings.models`——那个数组本来就是"我关注的模型"的清单，
+   * 它的顺序只影响这个菜单怎么排，和桌面端「多 API」列表的故障转移优先级
+   * 是两回事，互不干扰。
+   */
+  const modelSort = useSortableList(models.length, (from, to) => {
+    if (!settings) return
+    const next = [...models]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    void saveSettings({ ...settings, models: next })
+  })
 
   // 已有会话读库里的风格，新会话读 pending，都没有就落到默认风格。
   const styles = settings?.styles || []
@@ -317,20 +333,25 @@ export function Composer() {
                 <ChevronDown size={14} />
               </button>
               {modelMenu && (
-                <div className="model-menu">
-                  {models.map((m) => (
-                    <div
-                      key={m}
-                      className={`model-item ${m === model ? 'active' : ''}`}
-                      onClick={() => {
-                        if (settings) saveSettings({ ...settings, default_model: m })
-                        setModelMenu(false)
-                      }}
-                    >
-                      <span>{m}</span>
-                      {m === model && <Check size={14} />}
-                    </div>
-                  ))}
+                <div className="model-menu sortable-list" ref={modelSort.containerRef}>
+                  {models.map((m, i) => {
+                    const sortProps = modelSort.itemProps(i)
+                    return (
+                      <div
+                        key={m}
+                        {...sortProps}
+                        className={`model-item ${m === model ? 'active' : ''} ${sortProps.className}`}
+                        title="拖动可调整顺序"
+                        onClick={() => {
+                          if (settings) saveSettings({ ...settings, default_model: m })
+                          setModelMenu(false)
+                        }}
+                      >
+                        <span>{m}</span>
+                        {m === model && <Check size={14} />}
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>

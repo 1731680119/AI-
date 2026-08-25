@@ -152,6 +152,47 @@
 .model-item.active { color: var(--accent); font-weight: 600; }
 .model-menu { right: 0; left: auto; }
 
+/*
+ * 拖动排序（useSortableList）。三种状态：
+ *
+ *   .sortable-ghost       跟随指针的克隆，缩小 + 半透明，挂在 body 下
+ *   .sortable-placeholder 留在原位的占位框
+ *   .sortable-shifting    让位中的项，只负责给 transform 加过渡
+ *
+ * ghost 必须挂 body：菜单本身有圆角和 overflow，留在里面拖出边界就被裁掉了。
+ * 它是 position: fixed 的，所以 z-index 要压过 .model-menu 的 40。
+ */
+.sortable-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 200;
+  margin: 0;
+  opacity: .8;
+  pointer-events: none;
+  /* 缩放锚点在左上角，配合 translate 才能让它稳稳挂在指针下面。 */
+  transform-origin: top left;
+  box-sizing: border-box;
+  border-radius: 7px;
+  background: var(--bg-panel);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .26);
+}
+
+.sortable-placeholder {
+  opacity: .3;
+  background: var(--bg-hover) !important;
+}
+
+.sortable-shifting {
+  transition: transform .16s cubic-bezier(.2, .7, .3, 1);
+}
+
+/* 拖动期间全局禁选，免得整页文字被高亮。 */
+body.sortable-dragging {
+  user-select: none;
+  cursor: grabbing;
+}
+
 /* 导出菜单挂在顶栏，向上弹会超出窗口顶部被裁掉，这里改成向下展开。 */
 .export-select .model-menu {
   top: calc(100% + 6px);

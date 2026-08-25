@@ -74,6 +74,51 @@
   border-radius: 9px;
 }
 
+/*
+ * 拖动排序的三种状态，由 page-enhancements.js 的 makeSortable 打上：
+ *
+ *   .enh-sort-ghost       跟随指针的那份克隆，缩小 + 半透明
+ *   .enh-sort-placeholder 留在原位的占位框，降透明度并抽掉背景
+ *   .enh-sort-shifting    参与让位的项，只负责给 transform 加过渡
+ *
+ * 注意 ghost 挂在 body 下而不是列表里——列表可能有 overflow 裁剪，
+ * 拖出边界就看不见了。
+ */
+.enh-sort-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 10040;
+  margin: 0;
+  opacity: .78;
+  pointer-events: none;
+  /* 缩放锚点在左上角，配合 translate 才能让卡片稳稳挂在指针下面。 */
+  transform-origin: top left;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .28);
+  box-sizing: border-box;
+}
+
+.enh-sort-placeholder {
+  opacity: .32;
+  background: transparent;
+  border-style: dashed;
+}
+
+/* 被拖的那项自己不参与让位动画，否则松手回位时会多滑一下。 */
+.enh-sort-shifting {
+  transition: transform .16s cubic-bezier(.2, .7, .3, 1);
+}
+
+.enh-sort-placeholder.enh-sort-shifting {
+  transition: none;
+}
+
+/* 拖动期间全局禁选，免得整页文字被高亮。 */
+body.enh-sorting {
+  user-select: none;
+  cursor: grabbing;
+}
+
 .enh-add-api {
   justify-self: start;
 }

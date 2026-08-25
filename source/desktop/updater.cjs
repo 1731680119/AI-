@@ -12,13 +12,39 @@
  *   `isSilent = false`，老老实实走安装向导。
  * - **未打包时整体停用**。开发态没有 app-update.yml，electron-updater 会直接抛错，
  *   这里提前挡掉，界面上显示成「开发模式不检查更新」。
+ * - **只在启动时自动查一次**，之后一律等用户点「检查更新」。没有周期性定时器：
+ *   这个软件是长时间挂着用的，定时轮询除了偶尔弹个红点没别的用处。
+ * - **连不上就自动降级**。GitHub 在国内经常直连不通，`net-fallback.cjs` 会依次
+ *   试 DoH 解析、镜像站、HTTP 代理。它的所有改动都只在本进程内存里，
+ *   **不碰系统 hosts / 不装驱动 / 不改系统代理**，进程一死就没了，
+ *   不存在「没关软件就关机导致下次开机断网」这类残留风险。
+ *   即便如此每轮结束仍会 `teardown()` 主动还原，避免影响更新之外的请求。
  */
 const { app, ipcMain } = require('electron')
 
 const diag = require('./diagnostics-logger.cjs')
+const netFallback = require('./net-fallback.cjs')
 
-/** 启动后延迟多久做第一次检查。等窗口和后端都起来了再查，别抢启动那几秒。 */
+/**
+ * 启动时那次自动检查延迟多久。
+ *
+ * 主窗口 show 出来之后再查：检查本身要发网络请求，可能还要跑一轮降级探测，
+ * 抢在启动那几秒里做只会让界面更晚出来。
+ */
 const FIRST_CHECK_DELAY_MS = 8000
+
+/** electron-updater 的 generic provider 直连地址（GitHub Release 的固定路径）。 */
+const DIRECT_FEED = 'https://github.com/1731680119/AI-/releases/latest/download'
+
+/**
+ * 镜像候选。都是把 GitHub 原始 URL 拼在后面的反代，顺序即优先级。
+ * 这类站点时好时坏，多留几个，`establish()` 会逐个探活。
+ */
+const MIRROR_FEEDS = [
+  `https://ghfast.top/${DIRECT_FEED}`,
+  `https://gh-proxy.com/${DIRECT_FEED}`,
+  `https://ghproxy.net/${DIRECT_FEED}`,
+]
 
 /**
  * 渲染进程看到的完整状态。`status` 的取值：
@@ -36,10 +62,16 @@ let state = {
   bytesPerSecond: 0,
   error: '',
   checkedAt: 0,
+  /** 本次是走哪条通道通的：直连 / DoH 解析直连 / 镜像 xxx / 系统代理 xxx。 */
+  channel: '',
 }
 
 let autoUpdater = null
 let broadcast = () => {}
+/** 读取用户配置的更新代理地址，由 main.cjs 注入。 */
+let readProxy = () => ''
+/** 启动那次自动检查是否已经跑过。跑过之后就只认手动触发。 */
+let autoCheckDone = false
 
 function setState(patch) {
   state = { ...state, ...patch }
@@ -111,11 +143,13 @@ function attach() {
 }
 
 /**
- * 初始化。`sendToAll` 用来把状态广播给所有窗口。
+ * 初始化。`sendToAll` 用来把状态广播给所有窗口，
+ * `getProxy` 返回用户在设置里填的更新代理地址（可为空）。
  * 返回值只是方便调用方判断有没有真的启用。
  */
-function init(sendToAll) {
+function init(sendToAll, getProxy) {
   broadcast = typeof sendToAll === 'function' ? sendToAll : () => {}
+  readProxy = typeof getProxy === 'function' ? getProxy : () => ''
 
   if (!app.isPackaged) {
     state = { ...state, status: 'disabled', error: '开发模式（未打包）不检查更新' }
@@ -134,20 +168,59 @@ function init(sendToAll) {
   }
 
   attach()
+  // 全程只有这一次自动检查，之后完全由用户点按钮驱动。
   setTimeout(() => { void check(false) }, FIRST_CHECK_DELAY_MS)
   return true
 }
 
-/** 检查更新。manual=true 是用户在设置里点的，会把错误如实报出来。 */
+/**
+ * 建立可用的更新通道，并把 electron-updater 的 feed 指过去。
+ *
+ * 每次 check/download 前都要跑一遍：网络环境会变（连上 VPN、代理关了），
+ * 缓存上一次的结论只会在环境变化后给出莫名其妙的失败。
+ */
+async function openChannel() {
+  const channel = await netFallback.establish({
+    directBase: DIRECT_FEED,
+    mirrorBases: MIRROR_FEEDS,
+    manualProxy: readProxy(),
+  })
+  // generic provider：直接按 base + latest.yml 找版本，
+  // 这样镜像地址才能原样用上（github provider 会自己拼 api.github.com）。
+  autoUpdater.setFeedURL({ provider: 'generic', url: channel.base })
+  return channel
+}
+
+/**
+ * 检查更新。`manual=true` 是用户在设置里点的，会把错误如实报出来。
+ *
+ * 启动时那一次走 `manual=false`；此后**没有任何自动触发**，
+ * 想再查只能靠界面上的按钮。
+ */
 async function check(manual = true) {
   if (!autoUpdater) return publicState()
   if (state.status === 'downloading' || state.status === 'downloaded') return publicState()
+  if (!manual) {
+    // 防御性的：启动那次只该跑一遍，重复调用直接忽略。
+    if (autoCheckDone) return publicState()
+    autoCheckDone = true
+  }
+  setState({ status: 'checking', error: '', channel: '' })
   try {
+    const channel = await openChannel()
+    setState({ channel: channel.description })
     await autoUpdater.checkForUpdates()
   } catch (error) {
     // 静默检查失败（断网、GitHub 不通）不该在界面上留一条红字，记日志就够了。
     if (manual) setState({ status: 'error', error: error.message })
-    else diag.warn('update', `后台检查更新失败：${error.message}`)
+    else {
+      diag.warn('update', `后台检查更新失败：${error.message}`)
+      setState({ status: 'idle', error: '' })
+    }
+  } finally {
+    // 检查阶段用完就还原：不能让 DoH lookup / 代理 Agent 影响到别的请求。
+    // 下载会重新建一次通道。
+    netFallback.teardown()
   }
   return publicState()
 }
@@ -157,9 +230,14 @@ async function download() {
   if (state.status !== 'available' && state.status !== 'error') return publicState()
   setState({ status: 'downloading', percent: 0, error: '' })
   try {
+    const channel = await openChannel()
+    setState({ channel: channel.description })
     await autoUpdater.downloadUpdate()
   } catch (error) {
     setState({ status: 'error', error: error.message })
+  } finally {
+    // 下载完就把降级设置撤掉——这是「下载完成后关闭代理」那一步。
+    netFallback.teardown()
   }
   return publicState()
 }
@@ -178,6 +256,8 @@ function quitAndInstall(beforeQuit) {
   } catch (error) {
     diag.error('update', `安装前清理失败：${error.message}`)
   }
+  // 保险起见再还原一次：download 的 finally 已经做过，但这里是进程的最后一站。
+  netFallback.teardown()
   // isSilent=false：走完整安装向导，保住用户自定义的安装目录。
   // isForceRunAfter=true：装完自动把应用拉起来。
   autoUpdater.quitAndInstall(false, true)
