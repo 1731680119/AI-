@@ -424,6 +424,75 @@
     return { field, input }
   }
 
+  // 拖动 API 卡片排序时，指针靠近滚动容器上下边缘就自动滚动，
+  // 速度由离边缘的距离决定：刚进触发区最慢，贴边最快。
+  const DRAG_SCROLL_ZONE = 60
+  const DRAG_SCROLL_MIN_SPEED = 2
+  const DRAG_SCROLL_MAX_SPEED = 18
+  const dragScroll = { target: null, speed: 0, frame: 0 }
+
+  function scrollableAncestor(node) {
+    for (let el = node; el && el !== document.body; el = el.parentElement) {
+      const overflowY = getComputedStyle(el).overflowY
+      if (/(auto|scroll|overlay)/.test(overflowY) && el.scrollHeight > el.clientHeight + 1) return el
+    }
+    return document.scrollingElement || document.documentElement
+  }
+
+  function stepDragScroll() {
+    dragScroll.frame = 0
+    if (!dragScroll.target || !dragScroll.speed) return
+    const before = dragScroll.target.scrollTop
+    dragScroll.target.scrollTop = before + dragScroll.speed
+    // 已经滚到顶/底就停下，别让 rAF 空转。指针再动时会重新拉起。
+    if (dragScroll.target.scrollTop === before) return
+    dragScroll.frame = requestAnimationFrame(stepDragScroll)
+  }
+
+  function updateDragScroll(clientY) {
+    const target = dragScroll.target
+    if (!target) return
+    const rect = target === document.scrollingElement || target === document.documentElement
+      ? { top: 0, bottom: window.innerHeight, height: window.innerHeight }
+      : target.getBoundingClientRect()
+    // 容器很矮时按高度的三分之一收窄，免得上下触发区连成一片。
+    const zone = Math.min(DRAG_SCROLL_ZONE, rect.height / 3)
+    const fromTop = clientY - rect.top
+    const fromBottom = rect.bottom - clientY
+    let speed = 0
+    if (zone > 0) {
+      // ratio：刚进触发区为 0，贴到边缘为 1；指针越过边缘后保持最大速度。
+      if (fromTop < zone && fromTop > -zone) {
+        const ratio = Math.min(Math.max((zone - fromTop) / zone, 0), 1)
+        speed = -(DRAG_SCROLL_MIN_SPEED + (DRAG_SCROLL_MAX_SPEED - DRAG_SCROLL_MIN_SPEED) * ratio)
+      } else if (fromBottom < zone && fromBottom > -zone) {
+        const ratio = Math.min(Math.max((zone - fromBottom) / zone, 0), 1)
+        speed = DRAG_SCROLL_MIN_SPEED + (DRAG_SCROLL_MAX_SPEED - DRAG_SCROLL_MIN_SPEED) * ratio
+      }
+    }
+    dragScroll.speed = speed
+    if (speed && !dragScroll.frame) dragScroll.frame = requestAnimationFrame(stepDragScroll)
+  }
+
+  // 监听器挂在 document 上而不是卡片上：drop 之后列表会整体重绘，
+  // 被拖的那张卡片已经从 DOM 里没了，它的 dragend 不一定还会触发。
+  function onDocumentDragOver(event) {
+    updateDragScroll(event.clientY)
+  }
+
+  function beginDragScroll(node) {
+    dragScroll.target = scrollableAncestor(node)
+    document.addEventListener('dragover', onDocumentDragOver, true)
+  }
+
+  function stopDragScroll() {
+    document.removeEventListener('dragover', onDocumentDragOver, true)
+    if (dragScroll.frame) cancelAnimationFrame(dragScroll.frame)
+    dragScroll.frame = 0
+    dragScroll.target = null
+    dragScroll.speed = 0
+  }
+
   function settingsHost(body) {
     // 新版设置面板把「多 API」单独分了一栏，注入到那个占位容器里；
     // 旧版没有占位容器，退回到「聊天」标题后面。
@@ -493,11 +562,16 @@
           }
           event.dataTransfer.setData('text/plain', String(index))
           event.dataTransfer.effectAllowed = 'move'
+          beginDragScroll(list)
         })
-        card.addEventListener('dragend', () => { card.draggable = false })
+        card.addEventListener('dragend', () => {
+          card.draggable = false
+          stopDragScroll()
+        })
         card.addEventListener('dragover', (event) => event.preventDefault())
         card.addEventListener('drop', (event) => {
           event.preventDefault()
+          stopDragScroll()
           const from = Number(event.dataTransfer.getData('text/plain'))
           const to = index
           if (!Number.isInteger(from) || from === to) return
