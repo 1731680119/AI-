@@ -1,13 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import {
-  Activity, AlertTriangle, Brain, CheckCircle2, Globe, Image, LayoutTemplate, ListChecks, Loader2,
-  MessageSquare, Paperclip, Palette, Plus, RefreshCw, Server, Trash2, X, XCircle,
+  Activity, AlertTriangle, Brain, CheckCircle2, ChevronDown, Globe, GripVertical, Image,
+  LayoutTemplate, ListChecks, Loader2, Maximize2, MessageSquare, Minimize2, Paperclip, Palette,
+  Plus, RefreshCw, Server, Trash2, X, XCircle,
 } from 'lucide-react'
 import { useStore } from '../../../store'
 import { testSearchProvider } from '../../../services/api'
 import { useUpdateState } from '../../../hooks/useUpdateState'
+import { useSortableList } from '../../../hooks/useSortableList'
 import type {
-  ChatStyle, PromptTemplate, SearchProvider, SearchTestResult, Settings,
+  ChatStyle, ImageProvider, PromptTemplate, SearchProvider, SearchTestResult, Settings,
 } from '../../../types'
 import { DiagnosticsPanel } from '../../diagnostics/components/DiagnosticsPanel'
 import { MemoryPanel } from './MemoryPanel'
@@ -72,6 +75,14 @@ export function SettingsModal() {
   // 桌面端「多 API」里的上游列表。聊天用的地址和密钥被那一栏接管，
   // 「聊天」栏里的两个输入框是空的（且被隐藏），所以模型清单得问它要。
   const [desktopApis, setDesktopApis] = useState<DesktopApiEntry[]>([])
+  // 图片渠道里展开的那几张卡。和桌面端「多 API」一样默认全折叠，
+  // 且不做持久化——每次打开设置都从收起状态开始，长列表才看得过来。
+  const [openImageIds, setOpenImageIds] = useState<string[]>([])
+  // 弹窗尺寸：null 表示用 CSS 里的默认大小。最大化和手动尺寸都不记忆，
+  // 每次打开都回到默认，这是用户明确要的。
+  const [modalSize, setModalSize] = useState<{ w: number; h: number } | null>(null)
+  const [maximized, setMaximized] = useState(false)
+  const modalRef = useRef<HTMLDivElement>(null)
   // 「关于与更新」那一栏的红点。面板自己也订阅一份，两处互不影响。
   const { hasUpdate } = useUpdateState()
 
@@ -84,6 +95,7 @@ export function SettingsModal() {
         styles: settings.styles.map((s) => ({ ...s })),
         prompt_templates: (settings.prompt_templates || []).map((t) => ({ ...t })),
         search_providers: (settings.search_providers || []).map((p) => ({ ...p })),
+        image_providers: (settings.image_providers || []).map((p) => ({ ...p })),
       })
     }
   }, [settingsOpen, settings])
@@ -94,6 +106,9 @@ export function SettingsModal() {
       setSection('chat')
       // 模型选择器里的清单是按当时的地址和密钥拉的，重开时一律收起重来。
       setPickerFor('')
+      setOpenImageIds([])
+      setModalSize(null)
+      setMaximized(false)
     }
   }, [settingsOpen])
 
@@ -108,6 +123,25 @@ export function SettingsModal() {
       .catch(() => { if (alive) setDesktopApis([]) })
     return () => { alive = false }
   }, [settingsOpen])
+
+  /**
+   * 图片渠道的拖动排序。顺序即故障转移优先级，所以拖动是有实际意义的操作，
+   * 不只是排版。把手限定在 `.provider-drag-handle`，否则整张卡都是拖动区，
+   * 卡片里的输入框会点不进去。
+   *
+   * 注意这个 hook 必须写在下面那句提前 return 之前——它不能被条件跳过。
+   */
+  const imageSort = useSortableList(
+    draft?.image_providers?.length ?? 0,
+    (from, to) => setDraft((d) => {
+      if (!d) return d
+      const next = [...(d.image_providers || [])]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      return { ...d, image_providers: next }
+    }),
+    { handleSelector: '.provider-drag-handle' },
+  )
 
   if (!settingsOpen || !draft) return null
 
@@ -256,6 +290,71 @@ export function SettingsModal() {
       ],
     })
 
+  // ---- 图片生成的多渠道 ----
+
+  const imageProviders = draft.image_providers || []
+
+  const patchImageProvider = (id: string, p: Partial<ImageProvider>) =>
+    patch({ image_providers: imageProviders.map((x) => (x.id === id ? { ...x, ...p } : x)) })
+
+  const addImageProvider = () => {
+    const id = `img-${Date.now().toString(36)}`
+    patch({
+      image_providers: [
+        ...imageProviders,
+        { id, name: '新图片渠道', base_url: '', api_key: '', model: '', enabled: true },
+      ],
+    })
+    // 新加的这张直接展开：刚建出来是空的，折叠着没法填。
+    setOpenImageIds((ids) => [...ids, id])
+  }
+
+  const removeImageProvider = (id: string) => {
+    patch({ image_providers: imageProviders.filter((x) => x.id !== id) })
+    setOpenImageIds((ids) => ids.filter((x) => x !== id))
+  }
+
+  const toggleImageProvider = (id: string) =>
+    setOpenImageIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
+
+  // ---- 弹窗尺寸 ----
+
+  /** 从边框拖动改尺寸。dir 里带 e 就改宽、带 s 就改高，右下角两个都改。 */
+  const startResize = (dir: 'e' | 's' | 'se') => (event: ReactPointerEvent) => {
+    if (event.button !== 0) return
+    const node = modalRef.current
+    if (!node) return
+    event.preventDefault()
+    const rect = node.getBoundingClientRect()
+    const startX = event.clientX
+    const startY = event.clientY
+    // 最大化状态下拖边框视为「退出最大化并从当前尺寸接着调」。
+    setMaximized(false)
+
+    const onMove = (e: PointerEvent) => {
+      // 弹窗是居中的，鼠标往右拖一格，左边也会往左退一格，
+      // 所以宽度要按位移的两倍算，边框才跟得住指针。高度同理。
+      const width = dir === 's' ? rect.width : rect.width + (e.clientX - startX) * 2
+      const height = dir === 'e' ? rect.height : rect.height + (e.clientY - startY) * 2
+      setModalSize({
+        w: Math.max(560, Math.min(width, window.innerWidth - 16)),
+        h: Math.max(420, Math.min(height, window.innerHeight - 16)),
+      })
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+      document.body.classList.remove('modal-resizing')
+    }
+    window.addEventListener('pointermove', onMove, true)
+    window.addEventListener('pointerup', onUp, true)
+    document.body.classList.add('modal-resizing')
+  }
+
+  const modalStyle = maximized || !modalSize
+    ? undefined
+    : { width: `${modalSize.w}px`, height: `${modalSize.h}px`, maxWidth: 'none', maxHeight: 'none' }
+
   const save = async () => {
     setSaving(true)
     try {
@@ -273,10 +372,23 @@ export function SettingsModal() {
 
   return (
     <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && setSettingsOpen(false)}>
-      <div className="modal modal-settings">
+      <div
+        className={`modal modal-settings${maximized ? ' modal-maximized' : ''}`}
+        ref={modalRef}
+        style={modalStyle}
+      >
         <div className="modal-header">
           <h2>设置</h2>
-          <button className="icon-btn" onClick={() => setSettingsOpen(false)}><X size={17} /></button>
+          <div className="modal-header-actions">
+            <button
+              className="icon-btn"
+              title={maximized ? '还原' : '最大化'}
+              onClick={() => setMaximized((v) => !v)}
+            >
+              {maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+            </button>
+            <button className="icon-btn" onClick={() => setSettingsOpen(false)}><X size={17} /></button>
+          </div>
         </div>
 
         <div className="settings-split">
@@ -869,53 +981,117 @@ export function SettingsModal() {
               <h3 className="settings-section-title">图片生成</h3>
 
               <div className="field">
-                <label>API 地址（Base URL）</label>
-                <input
-                  value={draft.image_base_url}
-                  placeholder="https://api.example.com/v1"
-                  onChange={(e) => patch({ image_base_url: e.target.value })}
-                />
-              </div>
+                <label>图片渠道</label>
+                <div className="provider-list" ref={imageSort.containerRef}>
+                  {imageProviders.map((p, i) => {
+                    const sortProps = imageSort.itemProps(i)
+                    const open = openImageIds.includes(p.id)
+                    return (
+                      <div
+                        key={p.id}
+                        {...sortProps}
+                        className={`provider-card ${sortProps.className}${open ? ' open' : ''}`}
+                      >
+                        <div className="provider-head">
+                          <span className="provider-drag-handle" title="拖动调整顺序">
+                            <GripVertical size={14} />
+                          </span>
+                          <input
+                            className="style-name"
+                            value={p.name}
+                            placeholder="渠道名称，例如 某某中转站"
+                            onChange={(e) => patchImageProvider(p.id, { name: e.target.value })}
+                          />
+                          <label className="provider-enabled" title="停用后跳过这个渠道">
+                            <input
+                              type="checkbox"
+                              checked={p.enabled !== false}
+                              onChange={(e) => patchImageProvider(p.id, { enabled: e.target.checked })}
+                            />
+                            <span>启用</span>
+                          </label>
+                          <button
+                            className="icon-btn"
+                            title="删除这个渠道"
+                            onClick={() => removeImageProvider(p.id)}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                          <button
+                            className={`icon-btn provider-toggle${open ? ' open' : ''}`}
+                            title={open ? '收起' : '展开'}
+                            onClick={() => toggleImageProvider(p.id)}
+                          >
+                            <ChevronDown size={15} />
+                          </button>
+                        </div>
 
-              <div className="field">
-                <label>API 密钥</label>
-                <input
-                  type="password"
-                  value={draft.image_api_key}
-                  placeholder="sk-…"
-                  onChange={(e) => patch({ image_api_key: e.target.value })}
-                />
-              </div>
+                        {open && (
+                          <div className="provider-body">
+                            <div className="field-row">
+                              <div className="field">
+                                <label>API 地址（Base URL）</label>
+                                <input
+                                  value={p.base_url}
+                                  placeholder="https://api.example.com/v1"
+                                  onChange={(e) => patchImageProvider(p.id, { base_url: e.target.value })}
+                                />
+                              </div>
+                              <div className="field">
+                                <label>API 密钥</label>
+                                <input
+                                  type="password"
+                                  value={p.api_key}
+                                  placeholder="sk-…"
+                                  onChange={(e) => patchImageProvider(p.id, { api_key: e.target.value })}
+                                />
+                              </div>
+                            </div>
 
-              <div className="field">
-                <div className="field-head">
-                  <label>图片模型</label>
-                  <button
-                    className="btn-ghost model-probe-btn"
-                    disabled={!draft.image_base_url.trim() || !draft.image_api_key.trim()}
-                    title={draft.image_api_key.trim() ? '读取上游的模型清单' : '先填地址和密钥'}
-                    onClick={() => togglePicker('image')}
-                  >
-                    <ListChecks size={13} /> {pickerFor === 'image' ? '收起' : '检测可用模型'}
+                            <div className="field">
+                              <div className="field-head">
+                                <label>图片模型</label>
+                                <button
+                                  className="btn-ghost model-probe-btn"
+                                  disabled={!p.base_url.trim() || !p.api_key.trim()}
+                                  title={p.api_key.trim() ? '读取这个上游的模型清单' : '先填地址和密钥'}
+                                  onClick={() => togglePicker(p.id)}
+                                >
+                                  <ListChecks size={13} /> {pickerFor === p.id ? '收起' : '检测可用模型'}
+                                </button>
+                              </div>
+                              <input
+                                value={p.model}
+                                placeholder="gpt-image-2"
+                                onChange={(e) => patchImageProvider(p.id, { model: e.target.value })}
+                              />
+                              {pickerFor === p.id && (
+                                <ModelPicker
+                                  sources={singleSource(p.id, p.name, p.base_url, p.api_key)}
+                                  selected={[p.model]}
+                                  onConfirm={(models) => patchImageProvider(p.id, { model: models[0] })}
+                                  onClose={() => setPickerFor('')}
+                                />
+                              )}
+                              <div className="hint">
+                                清单是上游的完整模型列表，画图模型通常带 image / dall / flux / seedream 等字样。
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                  {imageProviders.length === 0 && (
+                    <div className="provider-empty">还没有图片渠道，添加一个才能生成图片</div>
+                  )}
+                  <button className="btn-ghost" onClick={addImageProvider}>
+                    <Plus size={14} /> 添加图片渠道
                   </button>
                 </div>
-                <input
-                  value={draft.image_model}
-                  placeholder="gpt-image-2"
-                  onChange={(e) => patch({ image_model: e.target.value })}
-                />
-                {pickerFor === 'image' && (
-                  <ModelPicker
-                    sources={singleSource(
-                      'image', '图片设置', draft.image_base_url, draft.image_api_key,
-                    )}
-                    selected={[draft.image_model]}
-                    onConfirm={(models) => patch({ image_model: models[0] })}
-                    onClose={() => setPickerFor('')}
-                  />
-                )}
                 <div className="hint">
-                  清单是上游的完整模型列表，画图模型通常带 image / dall / flux / seedream 等字样。
+                  和「多 API」一样按从上到下的顺序使用：排在前面的渠道失败了才换下一个，
+                  拖动六个小点可以调整优先级。渠道里的模型留空时，沿用第一个可用渠道的模型名。
                 </div>
               </div>
 
@@ -941,6 +1117,7 @@ export function SettingsModal() {
                   </select>
                 </div>
               </div>
+              <div className="hint">尺寸和质量是所有渠道共用的，不随渠道切换。</div>
             </section>
 
             <section className="settings-pane" hidden={section !== 'diagnostics'}>
@@ -961,6 +1138,15 @@ export function SettingsModal() {
             {saving ? '保存中…' : '保存'}
           </button>
         </div>
+
+        {/* 三个拖动条挂在最外层，最大化时由 CSS 隐藏。 */}
+        {!maximized && (
+          <>
+            <div className="modal-resize modal-resize-e" onPointerDown={startResize('e')} />
+            <div className="modal-resize modal-resize-s" onPointerDown={startResize('s')} />
+            <div className="modal-resize modal-resize-se" onPointerDown={startResize('se')} />
+          </>
+        )}
       </div>
     </div>
   )

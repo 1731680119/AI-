@@ -6,7 +6,12 @@ export function listConversations(): Promise<ConversationMeta[]> {
 }
 
 export function createConversation(
-  opts: { projectId?: string | null; styleId?: string | null } = {},
+  opts: {
+    projectId?: string | null
+    styleId?: string | null
+    memoryEnabled?: boolean
+    memoryIds?: string[]
+  } = {},
 ): Promise<ConversationMeta> {
   return requestJson('/conversations', {
     method: 'POST',
@@ -14,6 +19,8 @@ export function createConversation(
     body: JSON.stringify({
       project_id: opts.projectId ?? null,
       style_id: opts.styleId ?? null,
+      memory_enabled: opts.memoryEnabled ?? false,
+      memory_ids: opts.memoryIds ?? [],
     }),
   })
 }
@@ -31,6 +38,18 @@ export function setConversationStyle(id: string, styleId: string | null): Promis
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ style_id: styleId }),
+  })
+}
+
+export function setConversationMemory(
+  id: string,
+  enabled: boolean,
+  memoryIds: string[],
+): Promise<void> {
+  return requestVoid(`/conversations/${id}/memory`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled, memory_ids: memoryIds }),
   })
 }
 

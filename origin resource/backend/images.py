@@ -8,6 +8,7 @@ from datetime import datetime
 
 from openai import OpenAI
 
+import database as db
 import logging_config as diag
 from paths import IMAGES_DIR as APP_IMAGES_DIR
 
@@ -24,6 +25,48 @@ def get_client(settings: dict) -> OpenAI:
     if settings.get("image_base_url"):
         kwargs["base_url"] = settings["image_base_url"]
     return OpenAI(**kwargs)
+
+
+def _attempts(settings: dict, model: str) -> list[tuple[OpenAI, str, str]]:
+    """按 image_providers 的顺序返回 (client, 实际模型, 渠道名)。
+
+    模型取渠道自己填的那个，没填才用调用方传进来的——同一个 key 在不同中转站
+    往往对应不同的模型名，一路沿用第一个渠道的模型名换到第二个就会 404。
+    列表为空（老数据只填了那三个扁平字段）时退化成单渠道，行为和以前一致。
+    """
+    providers = db.active_image_providers(settings)
+    if not providers:
+        return [(get_client(settings), model, "图片渠道")]
+    attempts: list[tuple[OpenAI, str, str]] = []
+    for provider in providers:
+        kwargs = {"api_key": provider.get("api_key")}
+        if provider.get("base_url"):
+            kwargs["base_url"] = provider["base_url"]
+        attempts.append((
+            OpenAI(**kwargs),
+            provider.get("model") or model,
+            provider.get("name") or "未命名渠道",
+        ))
+    return attempts
+
+
+def _with_failover(settings: dict, model: str, call, action: str):
+    """按渠道顺序调用 `call(client, model)`，失败就换下一个渠道重试。
+
+    和多 API 那边同一套语义：顺序即优先级，全部失败时把最后一个错误抛出去，
+    让界面看到的是「最后一次尝试为什么不行」而不是一句笼统的失败。
+    """
+    attempts = _attempts(settings, model)
+    for index, (client, effective_model, name) in enumerate(attempts):
+        try:
+            return call(client, effective_model)
+        except Exception as error:  # noqa: BLE001 - 换渠道重试需要接住任何异常
+            if index + 1 >= len(attempts):
+                raise
+            diag.log_event(
+                "WARNING", "backend", f"图片渠道「{name}」{action}失败，改用下一个渠道：{error}",
+                logger="backend.images", channel=name, model=effective_model,
+            )
 
 
 def build_final_prompt(prompt: str, negative_prompt: str = "") -> str:
@@ -122,7 +165,6 @@ def generate_images(
     n: int,
 ) -> list[str]:
     """文生图，返回保存的文件名列表"""
-    client = get_client(settings)
     final_prompt = build_final_prompt(prompt, negative_prompt)
     timer = diag.Timer()
     meta = {"model": model, "size": size, "quality": quality, "n": n,
@@ -131,10 +173,14 @@ def generate_images(
     if preview:
         meta["prompt_preview"] = preview
     diag.log_event("INFO", "backend", "开始文生图", logger="backend.images", **meta)
-    try:
-        response = client.images.generate(
-            model=model, prompt=final_prompt, size=size, quality=quality, n=n
+
+    def call(client: OpenAI, effective_model: str):
+        return client.images.generate(
+            model=effective_model, prompt=final_prompt, size=size, quality=quality, n=n
         )
+
+    try:
+        response = _with_failover(settings, model, call, "文生图")
     except Exception as error:
         diag.log_exception(
             "backend.images", "文生图失败", error, elapsed_ms=timer.elapsed_ms(), **meta
@@ -159,13 +205,19 @@ def edit_image(
     quality: str,
 ) -> list[str]:
     """垫图编辑，返回保存的文件名列表"""
-    client = get_client(settings)
     final_prompt = build_final_prompt(prompt, negative_prompt)
-    buf = io.BytesIO(image_bytes)
-    buf.name = image_name or "image.png"
-    response = client.images.edit(
-        model=model, image=buf, prompt=final_prompt, quality=quality, **_size_kwargs(size)
-    )
+
+    def call(client: OpenAI, effective_model: str):
+        # 每次尝试都新建 BytesIO：上一次请求已经把流读到底了，
+        # 直接复用会给下一个渠道传过去一个空文件。
+        buf = io.BytesIO(image_bytes)
+        buf.name = image_name or "image.png"
+        return client.images.edit(
+            model=effective_model, image=buf, prompt=final_prompt, quality=quality,
+            **_size_kwargs(size)
+        )
+
+    response = _with_failover(settings, model, call, "垫图编辑")
     return [save_image_bytes(_item_to_bytes(item), "edited") for item in response.data]
 
 
@@ -228,7 +280,6 @@ def edit_image_with_references(
         )
         return {"files": files, "reference_mode": "none"}
 
-    client = get_client(settings)
     notes = list(reference_notes or [])
     # 让 notes 与参考图数量对齐，避免提示词错位。
     if len(notes) < len(reference_images):
@@ -236,46 +287,54 @@ def edit_image_with_references(
     notes = notes[: len(reference_images)]
 
     inline_prompt = build_reference_prompt(prompt, negative_prompt, notes, inline_references=True)
-    payload = [_named_buffer(main_image_bytes, main_image_name, "main.png")]
-    for index, (data, name) in enumerate(reference_images, start=1):
-        payload.append(_named_buffer(data, name, f"reference_{index}.png"))
+    text_prompt = build_reference_prompt(prompt, negative_prompt, notes, inline_references=False)
 
-    try:
-        response = client.images.edit(
-            model=model, image=payload, prompt=inline_prompt, quality=quality,
-            **_size_kwargs(size)
-        )
-        files = [save_image_bytes(_item_to_bytes(item), "edited") for item in response.data]
-        return {"files": files, "reference_mode": "inline"}
-    except Exception as error:  # noqa: BLE001 - 需要按报错内容决定回退策略
-        if not _is_multi_image_unsupported(error):
+    def call(client: OpenAI, effective_model: str) -> dict:
+        # 两级回退：先在当前渠道内试「多图 → 单图 + 文字描述」，
+        # 都不行才由 _with_failover 换下一个渠道。顺序不能反过来——
+        # 「不支持多图」是接口能力问题，换渠道解决不了，而且换了会白白多发一次请求。
+        payload = [_named_buffer(main_image_bytes, main_image_name, "main.png")]
+        for index, (data, name) in enumerate(reference_images, start=1):
+            payload.append(_named_buffer(data, name, f"reference_{index}.png"))
+
+        try:
+            response = client.images.edit(
+                model=effective_model, image=payload, prompt=inline_prompt, quality=quality,
+                **_size_kwargs(size)
+            )
+            files = [save_image_bytes(_item_to_bytes(item), "edited") for item in response.data]
+            return {"files": files, "reference_mode": "inline"}
+        except Exception as error:  # noqa: BLE001 - 需要按报错内容决定回退策略
+            if not _is_multi_image_unsupported(error):
+                diag.log_exception(
+                    "backend.images", "多图编辑失败", error,
+                    model=effective_model, reference_count=len(reference_images),
+                )
+                raise
+            # 上游不支持多图，走文字描述回退。这条日志能解释为什么参考图效果变弱。
+            diag.log_event(
+                "WARNING", "backend", f"上游不支持多图输入，回退为文字描述参考：{error}",
+                logger="backend.images", model=effective_model,
+                reference_count=len(reference_images),
+            )
+
+        # 回退：接口只接受单张图，把参考特征写进提示词。
+        buf = _named_buffer(main_image_bytes, main_image_name, "main.png")
+        try:
+            response = client.images.edit(
+                model=effective_model, image=buf, prompt=text_prompt, quality=quality,
+                **_size_kwargs(size)
+            )
+        except Exception as error:
             diag.log_exception(
-                "backend.images", "多图编辑失败", error,
-                model=model, reference_count=len(reference_images),
+                "backend.images", "单图回退编辑失败", error,
+                model=effective_model, reference_count=len(reference_images),
             )
             raise
-        # 上游不支持多图，走文字描述回退。这条日志能解释为什么参考图效果变弱。
-        diag.log_event(
-            "WARNING", "backend", f"上游不支持多图输入，回退为文字描述参考：{error}",
-            logger="backend.images", model=model, reference_count=len(reference_images),
-        )
+        files = [save_image_bytes(_item_to_bytes(item), "edited") for item in response.data]
+        return {"files": files, "reference_mode": "text"}
 
-    # 回退：接口只接受单张图，把参考特征写进提示词。
-    text_prompt = build_reference_prompt(prompt, negative_prompt, notes, inline_references=False)
-    buf = _named_buffer(main_image_bytes, main_image_name, "main.png")
-    try:
-        response = client.images.edit(
-            model=model, image=buf, prompt=text_prompt, quality=quality,
-            **_size_kwargs(size)
-        )
-    except Exception as error:
-        diag.log_exception(
-            "backend.images", "单图回退编辑失败", error,
-            model=model, reference_count=len(reference_images),
-        )
-        raise
-    files = [save_image_bytes(_item_to_bytes(item), "edited") for item in response.data]
-    return {"files": files, "reference_mode": "text"}
+    return _with_failover(settings, model, call, "参考图编辑")
 
 
 def delete_files(filenames: list[str]):

@@ -42,6 +42,20 @@ class GenerateBody(BaseModel):
     n: int = 1
 
 
+def _require_image_channel(settings: dict) -> None:
+    """没有可用渠道就直接回 400，别让请求走到上游再拿一个看不懂的报错。
+
+    只看 image_api_key 就够了：它由 get_settings 从渠道列表里镜像出来，
+    列表里一个可用的都没有时会被清空。分两句话报错是为了让用户知道
+    是「还没配」还是「配了但全禁用/没填密钥」。
+    """
+    if settings.get("image_api_key"):
+        return
+    if settings.get("image_providers"):
+        raise HTTPException(400, "没有可用的图片渠道：请在设置里启用渠道并填写 API Key")
+    raise HTTPException(400, "尚未配置图片生成 API Key")
+
+
 @router.get("")
 def list_images():
     return db.list_images()
@@ -50,8 +64,7 @@ def list_images():
 @router.post("/generate")
 def generate_images(body: GenerateBody):
     settings = db.get_settings()
-    if not settings.get("image_api_key"):
-        raise HTTPException(400, "尚未配置图片生成 API Key")
+    _require_image_channel(settings)
     model = body.model or settings["image_model"]
     size = body.size or settings["image_size"]
     quality = body.quality or settings["image_quality"]
@@ -79,8 +92,7 @@ async def edit_image(
     quality: str = Form(""),
 ):
     settings = db.get_settings()
-    if not settings.get("image_api_key"):
-        raise HTTPException(400, "尚未配置图片生成 API Key")
+    _require_image_channel(settings)
     model = model or settings["image_model"]
     # 编辑不套用设置里的图片尺寸：size 为空即「跟随原图」，由前端显式指定才固定尺寸。
     quality = quality or settings["image_quality"]

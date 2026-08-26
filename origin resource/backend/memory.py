@@ -2,8 +2,9 @@
 
 和上下文压缩的分工值得写清楚，两者都在省上下文，但省的东西不同：
   * 压缩摘要属于单个会话，随会话消亡，目的是让长对话还能继续。
-  * 长期记忆是全局的，只存值得跨会话复用的结论（称呼、技术栈、长期偏好），
-    每轮完整拼进系统提示词。
+  * 长期记忆是全局的，只存值得跨会话复用的结论（称呼、技术栈、长期偏好）。
+    存是全局存，用不用则由每个会话自己决定：新会话默认不带记忆，用户在
+    输入框上打开开关并勾选需要的条目后，被勾中的那几条才每轮拼进系统提示词。
 
 写入有两条路：用户在设置里手工增删，或者模型调用 remember 工具。后者是
 客户端执行的普通 function，跟 web_search 走同一套流程，因此工具卡片、
@@ -67,10 +68,20 @@ def _int_setting(settings: dict, key: str, default: int) -> int:
         return default
 
 
-def build_block(settings: dict) -> str:
-    """渲染拼进系统提示词的记忆块；没有记忆或功能关闭时返回空串。"""
+def build_block(settings: dict, memory_ids: list[str] | None = None) -> str:
+    """渲染拼进系统提示词的记忆块；没有记忆或功能关闭时返回空串。
+
+    `memory_ids` 是这个会话勾选了哪几条：
+      * `None` —— 不做筛选，全部带上。设置页算 block_chars 时走这条，
+        它问的是「全选时这块有多长」。
+      * 列表 —— 只带列表里的 id。空列表就是一条都不带，直接返回空串；
+        这不是异常，是用户打开了开关但还没勾任何一条。
+    """
     if not settings.get("memory_enabled", True):
         return ""
+    if memory_ids is not None and not memory_ids:
+        return ""
+    selected = set(memory_ids) if memory_ids is not None else None
     max_chars = max(_int_setting(settings, "memory_max_chars", 4000), 200)
 
     lines: list[str] = []
@@ -78,6 +89,8 @@ def build_block(settings: dict) -> str:
     # 否则实际发出去的长度会超过用户设的数。
     used = len(MEMORY_BLOCK_TEMPLATE.format(items=""))
     for item in reversed(db.list_memories()):  # 旧的在前，读起来更像时间线
+        if selected is not None and item.get("id") not in selected:
+            continue
         content = (item.get("content") or "").strip()
         if not content:
             continue

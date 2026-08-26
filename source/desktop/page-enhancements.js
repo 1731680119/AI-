@@ -688,7 +688,7 @@
     heading.textContent = '多 API 与 DeepSeek'
     const description = document.createElement('div')
     description.className = 'hint enh-section-hint'
-    description.textContent = '按列表顺序为模型查找可用 API；按住卡片左上角的 ⋮⋮ 手柄可拖动调整顺序。API Key 以明文保存在本地配置文件中，以便多台电脑间同步。'
+    description.textContent = '按列表顺序为模型查找可用 API；卡片默认折叠，点右侧的 ▾ 展开填写地址和密钥，按住左侧的 ⋮⋮ 手柄可拖动调整顺序。API Key 以明文保存在本地配置文件中，以便多台电脑间同步。'
     const list = document.createElement('div')
     list.className = 'enh-api-list'
     // 拖动排序只在这里挂一次：列表重绘换的是子节点，容器本身一直是同一个。
@@ -701,11 +701,16 @@
       },
     })
 
+    // 展开着的卡片 id。刻意只存在这个闭包里：每次打开设置页 injectSettings
+    // 都会重跑一遍，于是一律从「全部折叠」开始，不做持久化。
+    const expandedIds = new Set()
+
     function renderApiList() {
       list.replaceChildren()
       draft.apiList.forEach((api, index) => {
+        const expanded = expandedIds.has(api.id)
         const card = document.createElement('div')
-        card.className = 'enh-api-card'
+        card.className = expanded ? 'enh-api-card expanded' : 'enh-api-card'
         card.dataset.sortIndex = String(index)
         const header = document.createElement('div')
         header.className = 'enh-api-header'
@@ -713,6 +718,31 @@
         handle.className = 'enh-drag-handle'
         handle.textContent = '⋮⋮'
         handle.title = '拖动排序'
+        // 名称从原来的独立字段挪到标题行：折叠状态下只剩手柄、名字和箭头，
+        // 一屏能看下十几个 API，找起来比一路滚动快得多。
+        const name = document.createElement('input')
+        name.className = 'enh-api-name'
+        name.value = api.name || ''
+        name.placeholder = `API ${index + 1}`
+        name.addEventListener('input', () => { api.name = name.value })
+        const toggle = document.createElement('button')
+        toggle.type = 'button'
+        toggle.className = 'btn-ghost enh-api-toggle'
+        toggle.textContent = expanded ? '▴' : '▾'
+        toggle.title = expanded ? '收起' : '展开'
+        toggle.addEventListener('click', () => {
+          if (expanded) expandedIds.delete(api.id)
+          else expandedIds.add(api.id)
+          renderApiList()
+        })
+        header.append(handle, name, toggle)
+        card.append(header)
+
+        if (!expanded) {
+          list.appendChild(card)
+          return
+        }
+
         const enabledLabel = document.createElement('label')
         enabledLabel.className = 'enh-enabled'
         const enabled = document.createElement('input')
@@ -724,10 +754,15 @@
         remove.type = 'button'
         remove.className = 'btn-ghost enh-remove-api'
         remove.textContent = '删除'
-        remove.addEventListener('click', () => { draft.apiList.splice(index, 1); renderApiList() })
-        header.append(handle, enabledLabel, remove)
+        remove.addEventListener('click', () => {
+          expandedIds.delete(api.id)
+          draft.apiList.splice(index, 1)
+          renderApiList()
+        })
+        const actions = document.createElement('div')
+        actions.className = 'enh-api-actions'
+        actions.append(enabledLabel, remove)
 
-        const nameField = createInput('名称', api.name, (value) => { api.name = value }, { placeholder: `API ${index + 1}` })
         const urlField = createInput('Base URL', api.baseUrl, (value) => { api.baseUrl = value }, { placeholder: 'https://api.example.com/v1' })
         const keyRow = document.createElement('div')
         keyRow.className = 'field enh-key-field'
@@ -738,6 +773,9 @@
         const key = document.createElement('input')
         key.type = 'password'
         key.placeholder = api.hasKey ? '已保存；留空表示不修改' : 'sk-…'
+        // 折叠再展开会重建这个输入框，把已经改过还没保存的值填回去，
+        // 否则用户填了 Key、收起卡片、再展开就白填了。
+        key.value = api.apiKey || ''
         key.addEventListener('input', () => { api.apiKey = key.value })
         const reveal = document.createElement('button')
         reveal.type = 'button'
@@ -764,7 +802,7 @@
         })
         keyControls.append(key, reveal)
         keyRow.append(keyLabel, keyControls)
-        card.append(header, nameField.field, urlField.field, keyRow)
+        card.append(actions, urlField.field, keyRow)
         list.appendChild(card)
       })
       if (!draft.apiList.length) {
@@ -780,14 +818,18 @@
     add.className = 'btn-ghost enh-add-api'
     add.textContent = '＋ 添加 API'
     add.addEventListener('click', () => {
+      const id = crypto.randomUUID()
       draft.apiList.push({
-        id: crypto.randomUUID(),
+        id,
         name: `API ${draft.apiList.length + 1}`,
         baseUrl: '',
         apiKey: '',
         hasKey: false,
         enabled: true,
       })
+      // 新加的直接展开：刚点完「添加」就是要填地址和密钥，
+      // 折叠着只会多一次点击。
+      expandedIds.add(id)
       renderApiList()
     })
 

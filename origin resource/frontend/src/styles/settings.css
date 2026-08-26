@@ -29,12 +29,37 @@
   border-bottom: 1px solid var(--border);
 }
 .modal-header h2 { margin: 0; font-size: 17px; }
+.modal-header-actions { display: flex; align-items: center; gap: 2px; }
 .modal-body {
   padding: 16px 20px;
   overflow-y: auto;
 }
 /* 设置面板分块展示：左侧分类导航 + 右侧内容区，参考桌面端设置的排版。 */
-.modal-settings { width: min(880px, 94vw); height: min(680px, 86vh); }
+.modal-settings { width: min(880px, 94vw); height: min(680px, 86vh); position: relative; }
+
+/*
+ * 最大化：铺满整个应用窗口。用 !important 是因为手动拖过尺寸后元素上带着
+ * 内联的 width/height，不压过去按钮就点了没反应。
+ */
+.modal-settings.modal-maximized {
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: none !important;
+  max-height: none !important;
+  border-radius: 0;
+}
+.modal-settings.modal-maximized .settings-nav { border-bottom-left-radius: 0; }
+
+/*
+ * 拖动改尺寸的三个把手。做成压在边框上的窄条（不是外扩），
+ * 免得盖住底部按钮的点击区。最大化时组件不渲染它们。
+ */
+.modal-resize { position: absolute; z-index: 2; }
+.modal-resize-e { top: 0; right: 0; width: 6px; height: 100%; cursor: ew-resize; }
+.modal-resize-s { left: 0; bottom: 0; width: 100%; height: 6px; cursor: ns-resize; }
+.modal-resize-se { right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+/* 拖动期间全局禁选，且别让指针在经过 iframe/输入框时变样。 */
+body.modal-resizing { user-select: none; cursor: nwse-resize; }
 .settings-split {
   display: grid;
   grid-template-columns: 184px minmax(0, 1fr);

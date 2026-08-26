@@ -25,6 +25,9 @@ class SettingsPatch(BaseModel):
     max_tokens: int | None = None
     default_thinking: str | None = None
     theme: str | None = None
+    # 图片生成：image_providers 是多渠道列表（顺序即故障转移顺序），
+    # 下面三个旧字段是第一个可用渠道的镜像，留着给老界面和旧数据用。
+    image_providers: list[dict] | None = None
     image_base_url: str | None = None
     image_api_key: str | None = None
     image_model: str | None = None

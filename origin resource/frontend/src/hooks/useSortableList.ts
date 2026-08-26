@@ -36,7 +36,20 @@ interface Snapshot {
   height: number
 }
 
-export function useSortableList(count: number, onReorder: (from: number, to: number) => void) {
+export interface SortableOptions {
+  /**
+   * 只有点在匹配这个选择器的元素（或它的子元素）上才开始拖动。
+   * 列表项里有输入框、勾选框、按钮时必须给——否则整项都是拖动区，
+   * 点进输入框会被 preventDefault 掉，光标进不去。
+   */
+  handleSelector?: string
+}
+
+export function useSortableList(
+  count: number,
+  onReorder: (from: number, to: number) => void,
+  options: SortableOptions = {},
+) {
   const containerRef = useRef<HTMLDivElement>(null)
   const ghostRef = useRef<HTMLElement | null>(null)
   const layoutRef = useRef<Snapshot[]>([])
@@ -52,6 +65,9 @@ export function useSortableList(count: number, onReorder: (from: number, to: num
 
   const onReorderRef = useRef(onReorder)
   onReorderRef.current = onReorder
+  // 同样用 ref：选择器是配置项，不该进 start 的依赖里让回调反复重建。
+  const handleRef = useRef(options.handleSelector)
+  handleRef.current = options.handleSelector
 
   // 组件卸载时兜底清掉 ghost：菜单可能在拖动中途被关掉，
   // 那样 body 上会留一个删不掉的浮层。
@@ -63,6 +79,10 @@ export function useSortableList(count: number, onReorder: (from: number, to: num
 
   const start = useCallback((index: number, event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0 || count < 2) return
+    // 指定了拖动把手就先看有没有点在把手上。这一步必须在 preventDefault 之前，
+    // 否则卡片里的输入框永远拿不到焦点。
+    const handle = handleRef.current
+    if (handle && !(event.target as HTMLElement | null)?.closest?.(handle)) return
     const source = event.currentTarget
     const startX = event.clientX
     const startY = event.clientY

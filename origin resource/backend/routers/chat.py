@@ -62,9 +62,12 @@ def _system_extras(tree: dict, settings: dict) -> list[str]:
     当前项目，风格只影响措辞，越靠后越具体。
     """
     extras: list[str] = []
-    memory_block = memory.build_block(settings)
-    if memory_block:
-        extras.append(memory_block)
+    # 记忆是「按会话选用」的：会话没打开开关就一条都不带。注意这与设置里的
+    # memory_enabled 是两层开关——那个管功能本身，这个管当前这段对话。
+    if tree.get("memory_enabled"):
+        memory_block = memory.build_block(settings, tree.get("memory_ids") or [])
+        if memory_block:
+            extras.append(memory_block)
     project_id = tree.get("project_id")
     if project_id:
         project = db.get_project(project_id)

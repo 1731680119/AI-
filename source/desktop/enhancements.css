@@ -17,16 +17,26 @@
   gap: 10px;
 }
 
+/*
+ * 卡片默认折叠：只有标题行（手柄 + 名称 + 展开箭头）在 DOM 里，
+ * 展开后 JS 才把地址、密钥那几块追加进来。所以这里不需要写隐藏规则，
+ * 只把两种状态的内边距分开——折叠时窄一点，一屏能多排几条。
+ */
 .enh-api-card {
   display: grid;
   gap: 9px;
-  padding: 12px;
+  padding: 7px 10px;
   border: 1px solid var(--border, #ddd);
   border-radius: 10px;
   background: var(--surface, rgba(127, 127, 127, 0.04));
 }
 
+.enh-api-card.expanded {
+  padding: 12px;
+}
+
 .enh-api-header,
+.enh-api-actions,
 .enh-key-controls,
 .enh-failure-actions {
   display: flex;
@@ -34,8 +44,38 @@
   gap: 8px;
 }
 
-.enh-api-header .enh-remove-api {
+.enh-api-actions .enh-remove-api {
   margin-left: auto;
+}
+
+/* 名称输入框挪进了标题行，去掉边框让它平时看着像一行文字，聚焦时才显形。 */
+.enh-api-name {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 7px !important;
+  font-size: 13px !important;
+  font-weight: 500;
+  border: 1px solid transparent !important;
+  border-radius: 7px;
+  background: transparent !important;
+  color: inherit;
+  outline: none;
+}
+
+.enh-api-name:hover {
+  border-color: var(--border, #ddd) !important;
+}
+
+.enh-api-name:focus {
+  border-color: var(--accent, #c96442) !important;
+  background: var(--bg-input, rgba(127, 127, 127, 0.06)) !important;
+}
+
+.enh-api-toggle {
+  flex: none;
+  padding: 2px 8px !important;
+  line-height: 1.2;
+  color: var(--text-muted, #888);
 }
 
 .enh-drag-handle {

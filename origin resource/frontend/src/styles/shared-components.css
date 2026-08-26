@@ -215,6 +215,34 @@ body.sortable-dragging {
 }
 .style-btn:hover { background: var(--bg-hover); }
 
+/*
+ * 记忆选择器：一个按钮拆成两半——左半点了直接开关记忆，右半的小箭头才展开
+ * 列表勾选具体条目。两个 button 挨在一起，用间距和圆角让它看起来是一个控件。
+ * 菜单仍复用 .model-menu 的向上弹出（输入框贴着窗口底部，向下会被裁掉）。
+ */
+.memory-select { display: flex; align-items: center; }
+.memory-select .memory-btn { padding-right: 4px; border-radius: 8px 0 0 8px; }
+.memory-select .memory-caret { padding-left: 3px; padding-right: 6px; border-radius: 0 8px 8px 0; }
+.memory-btn.on { color: var(--accent); }
+
+/* 记忆正文可能很长，给菜单一个宽度区间，单条最多两行后省略。
+   类名带 pick 前缀是为了和设置页里那套 .memory-* 列表样式分开，别合并。 */
+.memory-menu { min-width: 240px; max-width: 380px; max-height: 320px; overflow-y: auto; }
+.memory-pick-item { align-items: flex-start; gap: 8px; }
+.memory-pick-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.45;
+}
+.memory-pick-empty {
+  padding: 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
 /* Artifact 面板（组件类名） */
 .artifact-title {
   flex: 1;
@@ -328,6 +356,60 @@ body.sortable-dragging {
 }
 .style-row textarea { font-size: 13px !important; }
 .style-list-edit > .btn-ghost {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 7px;
+}
+
+/*
+ * 图片渠道卡片：默认折叠，只露出把手、名称、启用勾选和展开箭头，
+ * 展开后才显示地址、密钥和模型。和桌面端「多 API」那份是同一套观感，
+ * 但那边是注入的 vanilla DOM（enhancements.css），改样式要两处一起改。
+ */
+.provider-list {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.provider-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: var(--bg-panel);
+}
+.provider-card.open { padding-bottom: 8px; }
+.provider-head { display: flex; align-items: center; gap: 6px; }
+.provider-drag-handle {
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 5px;
+  color: var(--text-muted);
+  cursor: grab;
+}
+.provider-drag-handle:hover { color: var(--text); background: var(--bg-hover); }
+.provider-drag-handle:active { cursor: grabbing; }
+/* .field 里的通用 input 规则没排除 checkbox，会把勾选框撑成整行，这里压回去。 */
+.provider-enabled { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+.provider-enabled input { width: auto !important; margin: 0; }
+.provider-toggle svg { transition: transform .15s ease; }
+.provider-toggle.open svg { transform: rotate(180deg); }
+.provider-body { margin-top: 8px; }
+.provider-body .field:last-child { margin-bottom: 0; }
+.provider-empty {
+  padding: 14px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+.provider-list > .btn-ghost {
   display: flex;
   align-items: center;
   justify-content: center;

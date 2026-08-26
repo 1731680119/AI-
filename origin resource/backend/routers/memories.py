@@ -22,7 +22,11 @@ class UpdateMemoryBody(BaseModel):
 
 @router.get("")
 def list_memories():
-    """带上渲染后的记忆块长度，方便界面提示这部分每轮要占多少上下文。"""
+    """带上渲染后的记忆块长度，方便界面提示这部分每轮要占多少上下文。
+
+    这里按「全选」算，即所有记忆都被某个会话勾上时的长度——设置页是全局视角，
+    不知道用户在哪段对话里勾了哪几条，给上限比给某个会话的实际值有意义。
+    """
     settings = db.get_settings()
     items = db.list_memories()
     return {"items": items, "block_chars": len(memory.build_block(settings))}

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ConversationMeta, ConversationTree, Message, Settings, Attachment, AppMode, ImageRecord, CodeExecRequest, ContextCompactInfo, ToolCall, ToolProgress, Project } from '../types'
+import type { ConversationMeta, ConversationTree, Message, Settings, Attachment, AppMode, ImageRecord, CodeExecRequest, ContextCompactInfo, ToolCall, ToolProgress, Project, Memory } from '../types'
 import * as api from '../services/api'
 import { logAction, logError, logWarn } from '../services/diagnostics'
 
@@ -30,10 +30,14 @@ export interface SendMessageOptions {
   continueFrom?: string
 }
 
-/** 新会话尚未落库，项目和风格先记在这里，创建时一并提交。 */
+/** 新会话尚未落库，项目、风格和记忆选择先记在这里，创建时一并提交。 */
 export interface PendingConversationMeta {
   projectId: string | null
   styleId: string | null
+  /** 记忆总开关。新会话恒为 false——「不带记忆」就是默认状态。 */
+  memoryEnabled: boolean
+  /** 勾中的记忆 id。 */
+  memoryIds: string[]
 }
 
 /** 全站共享状态和可执行操作的完整类型。 */
@@ -64,6 +68,9 @@ export interface Store {
   projectEditing: string | null
   /** 新会话在落库前选定的项目和风格。 */
   pending: PendingConversationMeta
+  /** 全部长期记忆，供输入框的记忆菜单勾选。设置页改完记忆后要重新拉。 */
+  memories: Memory[]
+  loadMemories: () => Promise<void>
   /** 本次运行选定的思考档位；null 表示跟随设置里的默认档位。 */
   thinkingLevel: string | null
   setThinkingLevel: (level: string | null) => void
@@ -105,6 +112,8 @@ export interface Store {
   assignProject: (projectId: string | null) => Promise<void>
   /** 设置当前会话的回答风格；无当前会话时记入 pending。 */
   assignStyle: (styleId: string | null) => Promise<void>
+  /** 设置当前会话用哪几条记忆；无当前会话时记入 pending。 */
+  assignMemory: (enabled: boolean, memoryIds: string[]) => Promise<void>
 
   setMode: (m: AppMode) => void
   loadImages: () => Promise<void>
@@ -160,7 +169,15 @@ export const useStore = create<Store>((set, get) => ({
   projects: [],
   projectFilter: null,
   projectEditing: null,
-  pending: { projectId: null, styleId: null },
+  pending: { projectId: null, styleId: null, memoryEnabled: false, memoryIds: [] },
+  memories: [],
+  loadMemories: async () => {
+    try {
+      set({ memories: (await api.listMemories()).items })
+    } catch {
+      // 拉不到记忆不该拦住聊天：菜单空着就是了，下次打开再试。
+    }
+  },
   thinkingLevel: null,
   setThinkingLevel: (level) => set({ thinkingLevel: level }),
 
@@ -206,7 +223,7 @@ export const useStore = create<Store>((set, get) => ({
     const { projectFilter } = get()
     set({
       currentId: null, tree: null, artifact: null, error: null,
-      pending: { projectId: projectFilter, styleId: null },
+      pending: { projectId: projectFilter, styleId: null, memoryEnabled: false, memoryIds: [] },
     })
   },
 
@@ -241,6 +258,8 @@ export const useStore = create<Store>((set, get) => ({
       const conv = await api.createConversation({
         projectId: pending.projectId,
         styleId: pending.styleId,
+        memoryEnabled: pending.memoryEnabled,
+        memoryIds: pending.memoryIds,
       })
       currentId = conv.id
       set({ currentId })
@@ -496,6 +515,17 @@ export const useStore = create<Store>((set, get) => ({
       return
     }
     await api.setConversationStyle(currentId, styleId)
+    await get().refreshTree()
+  },
+
+  assignMemory: async (enabled, memoryIds) => {
+    const { currentId } = get()
+    if (!currentId) {
+      set((s) => ({ pending: { ...s.pending, memoryEnabled: enabled, memoryIds } }))
+      return
+    }
+    await api.setConversationMemory(currentId, enabled, memoryIds)
+    // 只刷会话树：开关记忆不改标题也不改时间，会话列表没有变化。
     await get().refreshTree()
   },
 

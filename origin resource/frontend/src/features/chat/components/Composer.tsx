@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  ArrowUp, Brain, Check, ChevronDown, LayoutTemplate, Paperclip, Square, X, Palette,
+  ArrowUp, Bookmark, Brain, Check, ChevronDown, LayoutTemplate, Paperclip, Square, X, Palette,
 } from 'lucide-react'
 import { AttachmentIcon } from '../attachmentIcon'
 import { useStore } from '../../../store'
@@ -28,6 +28,9 @@ export function Composer() {
   const tree = useStore((s) => s.tree)
   const pending = useStore((s) => s.pending)
   const assignStyle = useStore((s) => s.assignStyle)
+  const assignMemory = useStore((s) => s.assignMemory)
+  const memories = useStore((s) => s.memories)
+  const loadMemories = useStore((s) => s.loadMemories)
   const thinkingLevel = useStore((s) => s.thinkingLevel)
   const setThinkingLevel = useStore((s) => s.setThinkingLevel)
 
@@ -38,12 +41,14 @@ export function Composer() {
   const [styleMenu, setStyleMenu] = useState(false)
   const [tplMenu, setTplMenu] = useState(false)
   const [thinkMenu, setThinkMenu] = useState(false)
+  const [memoryMenu, setMemoryMenu] = useState(false)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const styleRef = useRef<HTMLDivElement>(null)
   const tplRef = useRef<HTMLDivElement>(null)
   const thinkRef = useRef<HTMLDivElement>(null)
+  const memoryRef = useRef<HTMLDivElement>(null)
 
   // 自动伸缩输入框高度
   useEffect(() => {
@@ -89,6 +94,15 @@ export function Composer() {
     document.addEventListener('mousedown', onClick)
     return () => document.removeEventListener('mousedown', onClick)
   }, [thinkMenu])
+
+  useEffect(() => {
+    if (!memoryMenu) return
+    const onClick = (e: MouseEvent) => {
+      if (memoryRef.current && !memoryRef.current.contains(e.target as Node)) setMemoryMenu(false)
+    }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [memoryMenu])
 
   const canSend = (text.trim() || attachments.length > 0) && !streaming && !uploading
 
@@ -180,6 +194,43 @@ export function Composer() {
 
   // 本次没选就显示设置里的默认档位，让按钮上的字和实际生效的档位一致。
   const thinking = thinkingLevel || settings?.default_thinking || 'auto'
+
+  // 记忆同样是「已有会话读库、新会话读 pending」。总开关和勾选项分开存：
+  // 关掉开关不清空勾选，用户再打开时上次挑的那几条还在。
+  const memoryEnabled = tree ? tree.memory_enabled : pending.memoryEnabled
+  const memoryIds = (tree ? tree.memory_ids : pending.memoryIds) || []
+  const memoryCount = memoryEnabled ? memoryIds.length : 0
+
+  const openMemoryMenu = () => {
+    // 每次打开都重新拉：记忆可能刚在设置页里被增删过。
+    if (!memoryMenu) void loadMemories()
+    setMemoryMenu((v) => !v)
+  }
+
+  const toggleMemorySwitch = async () => {
+    if (memoryEnabled) {
+      await assignMemory(false, memoryIds)
+      return
+    }
+    // 从关到开时如果一条都没勾，默认全选——用户点开关的意思是「这次要用记忆」，
+    // 让他先看到效果、再按需取消勾选，比打开后什么都不带更符合预期。
+    // 先 await 拉一次列表，否则菜单还没开过时 memories 是空的，会开出一个空开关。
+    let ids = memoryIds
+    if (!ids.length) {
+      await loadMemories()
+      ids = useStore.getState().memories.map((m) => m.id)
+    }
+    await assignMemory(true, ids)
+  }
+
+  const toggleMemoryItem = (id: string) => {
+    // 以界面上看到的勾选状态为准：开关关着时列表一律显示未勾选，
+    // 这时点第一条就该是「只用这一条」，而不是把上次残留的选择反着改一下。
+    const base = memoryEnabled ? memoryIds : []
+    const next = base.includes(id) ? base.filter((x) => x !== id) : [...base, id]
+    // 勾任意一条即视为打开总开关，省掉「勾了却没生效」这种困惑。
+    void assignMemory(next.length > 0, next)
+  }
 
   return (
     <div className="composer-wrap">
@@ -323,6 +374,47 @@ export function Composer() {
                 </div>
               )}
             </div>
+            {settings?.memory_enabled !== false && (
+              <div className="style-select memory-select" ref={memoryRef}>
+                <button
+                  className={`style-btn memory-btn${memoryEnabled ? ' on' : ''}`}
+                  title={memoryEnabled ? `本次对话带上 ${memoryIds.length} 条记忆，点击关闭` : '本次对话不带记忆，点击开启'}
+                  onClick={toggleMemorySwitch}
+                >
+                  <Bookmark size={15} fill={memoryEnabled ? 'currentColor' : 'none'} />
+                  <span>{memoryEnabled ? `记忆 ${memoryCount}` : '记忆'}</span>
+                </button>
+                <button
+                  className="style-btn memory-caret"
+                  title="选择要带上的记忆"
+                  onClick={openMemoryMenu}
+                >
+                  <ChevronDown size={13} />
+                </button>
+                {memoryMenu && (
+                  <div className="model-menu memory-menu">
+                    {memories.length === 0 ? (
+                      <div className="memory-pick-empty">还没有长期记忆，可在设置里添加</div>
+                    ) : (
+                      memories.map((m) => {
+                        const checked = memoryEnabled && memoryIds.includes(m.id)
+                        return (
+                          <div
+                            key={m.id}
+                            className={`model-item memory-pick-item ${checked ? 'active' : ''}`}
+                            title={m.content}
+                            onClick={() => toggleMemoryItem(m.id)}
+                          >
+                            <span className="memory-pick-text">{m.content}</span>
+                            {checked && <Check size={14} />}
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             {uploading && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>上传中…</span>}
           </div>
 
