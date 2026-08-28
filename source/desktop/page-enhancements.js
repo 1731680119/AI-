@@ -36,110 +36,131 @@
     try { return JSON.parse(line.trim().slice(5).trim()) } catch { return null }
   }
 
-  async function runChatFailover(controller, input, init, body, model, plan) {
-    const failures = []
-    for (let index = 0; index < plan.attempts.length; index += 1) {
-      const api = plan.attempts[index]
-      const hasNext = index < plan.attempts.length - 1
-      let token = null
-      let reader = null
-      let startEvent = null
-      let partialReceived = false
-      let sawDone = false
-      let failureMessage = ''
-      const requestController = new AbortController()
-      const abortFromCaller = () => requestController.abort(init.signal?.reason)
-      init.signal?.addEventListener('abort', abortFromCaller, { once: true })
+  // 只打选中的那一个 API。以前这里会按列表顺序轮着试，结果是：真实原因被
+  // 「所有 API 均不可用」四条错误糊在一起，而且串着等四次让人以为是超时
+  //（实际每次都只花一两秒就被 400 顶回来了）。现在选了谁就只调谁，它报什么
+  // 就原样呈现什么。
+  async function runChatRequest(controller, input, init, body, model, plan) {
+    const api = plan.attempts[0]
+    let token = null
+    let reader = null
+    let sawDone = false
+    let failureMessage = ''
+    const requestController = new AbortController()
+    const abortFromCaller = () => requestController.abort(init.signal?.reason)
+    init.signal?.addEventListener('abort', abortFromCaller, { once: true })
+    try {
+      token = await desktop.beginApiAttempt({ apiId: api.id, model })
+      let response
       try {
-        token = await desktop.beginApiAttempt({ apiId: api.id, model })
-        let response
-        try {
-          response = await originalFetch(input, { ...init, signal: requestController.signal })
-        } finally {
-          if (token) {
-            await desktop.endApiAttempt(token).catch(() => {})
-            token = null
-          }
-        }
-        if (!response.ok || !response.body) {
-          const detail = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }))
-          throw new Error(detail.detail || detail.message || `HTTP ${response.status}`)
-        }
-
-        if (!failureMessage && !partialReceived) {
-          window.dispatchEvent(new CustomEvent('chatbot-api-match-complete'))
-        }
-
-        reader = response.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-        while (true) {
-          const { done, value } = await readWithIdleTimeout(reader, plan.timeoutMs, init.signal)
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          const blocks = buffer.split(/\r?\n\r?\n/)
-          buffer = blocks.pop() || ''
-          for (const block of blocks) {
-            const event = parseEventBlock(block)
-            if (!event) continue
-            if (event.type === 'start') {
-              startEvent = event
-              controller.enqueue(sseEvent(event))
-            } else if (event.type === 'error') {
-              failureMessage = event.message || '请求失败'
-            } else if (event.type === 'content' || event.type === 'thinking') {
-              partialReceived = true
-              controller.enqueue(sseEvent(event))
-            } else if (event.type === 'done') {
-              sawDone = true
-              controller.enqueue(sseEvent(event))
-            } else if (!failureMessage) {
-              controller.enqueue(sseEvent(event))
-            }
-          }
-        }
-        if (!failureMessage && !sawDone) failureMessage = 'API 响应意外中断'
-        if (!failureMessage) {
-          await desktop.markApiSuccess({ model, apiId: api.id })
-          controller.close()
-          return
-        }
-      } catch (error) {
-        if (init.signal?.aborted || error?.name === 'AbortError') {
-          try { await reader?.cancel() } catch {}
-          window.dispatchEvent(new CustomEvent('chatbot-api-match-complete'))
-          controller.close()
-          return
-        }
-        failureMessage = error?.message || String(error)
+        response = await originalFetch(input, { ...init, signal: requestController.signal })
       } finally {
-        init.signal?.removeEventListener('abort', abortFromCaller)
-        if (token) await desktop.endApiAttempt(token).catch(() => {})
+        if (token) {
+          await desktop.endApiAttempt(token).catch(() => {})
+          token = null
+        }
+      }
+      if (!response.ok || !response.body) {
+        const detail = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }))
+        throw new Error(detail.detail || detail.message || `HTTP ${response.status}`)
       }
 
-      failures.push({ api: api.name, message: failureMessage })
-      if (hasNext) {
-        window.dispatchEvent(new CustomEvent('chatbot-api-match-waiting', {
-          detail: { message: '当前 API 不可用，正在尝试其他 API，请稍候…' },
-        }))
-        if (startEvent) {
-          await desktop.cleanupApiAttempt({
-            conversationId: body.conversation_id,
-            userMessageId: startEvent.user_message?.id || null,
-            assistantMessageId: startEvent.assistant_message_id || null,
-            parentId: startEvent.user_message?.parent_id || null,
-            regenerate: Boolean(body.regenerate_from),
-          }).catch(() => {})
+      reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { done, value } = await readWithIdleTimeout(reader, plan.timeoutMs, init.signal)
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const blocks = buffer.split(/\r?\n\r?\n/)
+        buffer = blocks.pop() || ''
+        for (const block of blocks) {
+          const event = parseEventBlock(block)
+          if (!event) continue
+          if (event.type === 'error') {
+            // 错误事件照常放给前端：不再需要攒起来等着拼汇总。
+            failureMessage = event.message || '请求失败'
+            controller.enqueue(sseEvent(event))
+          } else {
+            if (event.type === 'done') sawDone = true
+            controller.enqueue(sseEvent(event))
+          }
         }
-        if (partialReceived) controller.enqueue(sseEvent({ type: 'reset' }))
       }
+      if (!failureMessage && !sawDone) failureMessage = 'API 响应意外中断'
+    } catch (error) {
+      if (init.signal?.aborted || error?.name === 'AbortError') {
+        try { await reader?.cancel() } catch {}
+        controller.close()
+        return
+      }
+      failureMessage = error?.message || String(error)
+      // 连接层的失败（打不通、超时、非 200）后端不会发 error 事件，这里补一个。
+      controller.enqueue(sseEvent({ type: 'error', message: failureMessage }))
+    } finally {
+      init.signal?.removeEventListener('abort', abortFromCaller)
+      if (token) await desktop.endApiAttempt(token).catch(() => {})
     }
 
-    const summary = failures.map((item) => `${item.api}：${item.message}`).join('\n') || '没有可用的 API'
-    window.dispatchEvent(new CustomEvent('chatbot-api-match-complete'))
-    window.dispatchEvent(new CustomEvent('chatbot-api-failures', { detail: { failures, summary } }))
-    controller.enqueue(sseEvent({ type: 'error', message: `所有 API 均不可用\n${summary}` }))
+    if (failureMessage) {
+      window.dispatchEvent(new CustomEvent('chatbot-api-failures', {
+        detail: {
+          failures: [{ api: api.name, message: failureMessage }],
+          summary: `${api.name}：${failureMessage}`,
+        },
+      }))
+    }
     controller.close()
+  }
+
+  /**
+   * 图片生成 / 编辑：和聊天走同一套「临时写渠道 → 发请求 → 清掉」的握手，
+   * 只是写的是 image_base_url / image_api_key，而且响应是普通 JSON 不是 SSE，
+   * 所以原样透传即可。
+   *
+   * 渠道 id 从请求体里取（generate 是 JSON 的 api_id，edit 是表单的 api_id），
+   * 取不到就退回主进程「谁声明了这个模型就用谁」的判断。
+   */
+  const IMAGE_PATHS = new Set(['/api/images/generate', '/api/images/edit'])
+
+  function imageRequestFields(init) {
+    const body = init?.body
+    if (body instanceof FormData) {
+      return { apiId: String(body.get('api_id') || ''), model: String(body.get('model') || '') }
+    }
+    try {
+      const parsed = JSON.parse(body)
+      return { apiId: String(parsed.api_id || ''), model: String(parsed.model || '') }
+    } catch {
+      return { apiId: '', model: '' }
+    }
+  }
+
+  async function runImageRequest(input, init) {
+    const { apiId, model } = imageRequestFields(init)
+    let plan
+    try {
+      plan = await desktop.getApiPlan(apiId ? { model, apiId } : model)
+    } catch (error) {
+      return apiErrorResponse(error?.message || String(error))
+    }
+    if (!plan.attempts.length) {
+      return apiErrorResponse('没有已启用的 API，请先打开设置添加 API。')
+    }
+    let token = null
+    try {
+      token = await desktop.beginApiAttempt({ apiId: plan.attempts[0].id, model, target: 'image' })
+    } catch (error) {
+      return apiErrorResponse(error?.message || String(error))
+    }
+    try {
+      // 这里必须等整个响应回来才放锁：画一张图动辄几十秒，提前放锁会让下一次
+      // 请求把 image_api_key 改掉。主进程那个 45 秒看门狗是兜底，真到点了也只是
+      // 提前放锁——后端早就拿着密钥建好客户端了，在途的这次请求不受影响。
+      return await originalFetch(input, init)
+    } finally {
+      await desktop.endApiAttempt(token).catch(() => {})
+    }
   }
 
   window.fetch = async function enhancedFetch(input, init = {}) {
@@ -147,25 +168,24 @@
     let parsed
     try { parsed = new URL(requestUrl, location.href) } catch { return originalFetch(input, init) }
     const method = String(init.method || (typeof input !== 'string' && input?.method) || 'GET').toUpperCase()
-    if (method !== 'POST' || parsed.pathname !== '/api/chat') return originalFetch(input, init)
+    if (method !== 'POST') return originalFetch(input, init)
+    if (IMAGE_PATHS.has(parsed.pathname)) return runImageRequest(input, init)
+    if (parsed.pathname !== '/api/chat') return originalFetch(input, init)
 
     let body
     try { body = JSON.parse(init.body) } catch { return originalFetch(input, init) }
     const model = String(body.model || '')
+    // api_id 是前端在模型选择器里选中的那个渠道。老版本前端不带这个字段，
+    // 此时退回主进程里「谁声明了这个模型就用谁」的判断，界面照旧能用。
+    const apiId = String(body.api_id || '')
     let plan = null
     try {
-      plan = await desktop.getApiPlan(model)
-      if (plan?.attempts?.length && !plan.matched) {
-        window.dispatchEvent(new CustomEvent('chatbot-api-match-waiting', {
-          detail: { message: '正在为该模型选择适合的 API，请稍候…' },
-        }))
-      }
+      plan = await desktop.getApiPlan(apiId ? { model, apiId } : model)
     } catch (error) {
       return apiErrorResponse(error?.message || String(error))
     }
     const enhancedInit = init
     if (!plan.attempts.length) {
-      window.dispatchEvent(new CustomEvent('chatbot-api-match-complete'))
       setTimeout(() => window.dispatchEvent(new CustomEvent('chatbot-api-failures', {
         detail: { failures: [], summary: '没有已启用的 API，请先打开设置添加 API。' },
       })), 0)
@@ -173,16 +193,15 @@
     }
     const stream = new ReadableStream({
       start(controller) {
-        runChatFailover(controller, input, enhancedInit, body, model, plan).catch((error) => {
-          window.dispatchEvent(new CustomEvent('chatbot-api-match-complete'))
+        runChatRequest(controller, input, enhancedInit, body, model, plan).catch((error) => {
           controller.enqueue(sseEvent({ type: 'error', message: error?.message || String(error) }))
           controller.close()
         })
       },
     })
-    const response = new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
-    Object.defineProperty(response, 'aiChatbotFailover', { value: true })
-    return response
+    // 这里原来还挂一个 aiChatbotFailover 标记，整个仓库没有任何地方读它，
+    // 名字也是轮询时代留下的，一并去掉。
+    return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
   }
 
   function selectionTextForElement(target) {
@@ -271,10 +290,9 @@
     box.querySelector('span:last-child').textContent = next
   }
 
-  window.addEventListener('chatbot-api-match-waiting', (event) => {
-    showWaiting('api-match', event.detail?.message || '正在选择适合的 API，请稍候…')
-  })
-  window.addEventListener('chatbot-api-match-complete', () => hideWaiting('api-match'))
+  // 这里原来监听 chatbot-api-match-waiting / -complete 两个事件，给轮询选渠道
+  // 的过程显示「正在选择适合的 API」。现在只打用户选中的那一个渠道，没有可选
+  // 过程，两个事件已全部删除——别再加回来。
 
   function syncNativeWaitingIndicators() {
     const backendStarting = [...document.querySelectorAll('.error-banner')]
@@ -384,7 +402,10 @@
     const card = document.createElement('div')
     card.className = 'enh-failure-card'
     const title = document.createElement('h3')
-    title.textContent = '所有 API 均不可用'
+    // 现在只调选中的那一个 API，所以标题说的是「这个 API 失败了」，
+    // 而不是以前那句会误导人的「所有 API 均不可用」。
+    const failedName = detail.failures?.[0]?.api
+    title.textContent = failedName ? `${failedName} 调用失败` : '请求失败'
     const pre = document.createElement('pre')
     pre.textContent = detail.summary
     const actions = document.createElement('div')
@@ -638,6 +659,269 @@
     })
   }
 
+  /**
+   * 调后端的探测接口（模型清单 / 单模型测试）。
+   *
+   * 走 originalFetch 而不是 window.fetch：上面那个补丁只拦 POST /api/chat，
+   * 这里本来也不会被绕进去，但显式用原生的更稳妥。
+   * 请求体里带的是卡片里「当前」的地址和密钥，可以是还没保存的——后端的
+   * ModelProbeRequest 就是为「刚粘上地址就想看看有哪些模型」设计的。
+   */
+  async function probeBackend(path, payload) {
+    const response = await originalFetch(`/api/settings/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`
+      try {
+        const data = await response.json()
+        if (data?.detail) detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)
+      } catch { /* 上游返回的不是 JSON，就只报状态码 */ }
+      throw new Error(detail)
+    }
+    return response.json()
+  }
+
+  /** 探测用的凭据：优先用输入框里刚填的，没填就取已保存的那把。 */
+  async function probeCredentials(api) {
+    const apiKey = api.apiKey || (api.hasKey ? await desktop.revealApiKey(api.id) : '')
+    return { base_url: api.baseUrl || '', api_key: apiKey || '' }
+  }
+
+  /** 能力标签下拉框，模型清单里每行一个。取值和 main.cjs 的 normalizeModelEntry 对齐。 */
+  function capabilitySelect(value, onChange) {
+    const select = document.createElement('select')
+    select.className = 'enh-model-capability'
+    for (const [option, label] of [['chat', '对话'], ['image', '绘画']]) {
+      const node = document.createElement('option')
+      node.value = option
+      node.textContent = label
+      select.appendChild(node)
+    }
+    select.value = value === 'image' ? 'image' : 'chat'
+    select.addEventListener('change', () => onChange(select.value))
+    return select
+  }
+
+  /**
+   * 写模型行右侧那一小格状态文字。
+   *
+   * 上游报错时 message 可能是一整段原文（grok 那条 503 就有好几百字），
+   * 直接塞进去会把行撑到屏幕外——CSS 那边已经用 minmax(0,1fr) + flex 收缩
+   * 兜住了宽度，但把几百字硬塞进一个单行省略号的格子也没意义。所以这里再
+   * 截一次：格子里放短的，完整原文进 title，鼠标悬停能看全。
+   */
+  function setStatus(node, text) {
+    const full = String(text == null ? '' : text).replace(/\s+/g, ' ').trim()
+    node.textContent = full.length > 60 ? `${full.slice(0, 60)}…` : full
+    node.title = full
+  }
+
+  /**
+   * 一个渠道自己的模型清单块：获取清单、手动增删、逐个测试。
+   *
+   * 只重绘自己这一小块 DOM，不惊动外面的 renderApiList——整表重绘会把地址、
+   * 密钥输入框全部重建，正在填的内容和光标位置都会丢。
+   */
+  function buildModelBlock(api) {
+    const block = document.createElement('div')
+    block.className = 'field enh-model-block'
+    const caption = document.createElement('label')
+    caption.textContent = '模型清单'
+    const hint = document.createElement('div')
+    hint.className = 'hint'
+    hint.textContent = '只有这里列出的模型才会出现在聊天和绘画的模型选择器里。「获取模型清单」是问上游要一份清单，不产生费用；「测试」会真发一次极短的请求。'
+    const rows = document.createElement('div')
+    rows.className = 'enh-model-rows'
+    const picker = document.createElement('div')
+    picker.className = 'enh-model-picker'
+    picker.hidden = true
+
+    const fetchButton = document.createElement('button')
+    fetchButton.type = 'button'
+    fetchButton.className = 'btn-ghost'
+    fetchButton.textContent = '获取模型清单'
+    const manual = document.createElement('input')
+    manual.type = 'text'
+    manual.className = 'enh-model-manual'
+    manual.placeholder = '手动填模型名，回车添加'
+    const manualAdd = document.createElement('button')
+    manualAdd.type = 'button'
+    manualAdd.className = 'btn-ghost'
+    manualAdd.textContent = '添加'
+    const bar = document.createElement('div')
+    bar.className = 'enh-model-bar'
+    bar.append(fetchButton, manual, manualAdd)
+
+    function hasModel(name, capability) {
+      return (api.models || []).some((item) => item.name === name && item.capability === capability)
+    }
+
+    function addModel(name, capability = 'chat') {
+      const trimmed = String(name || '').trim()
+      if (!trimmed || hasModel(trimmed, capability)) return false
+      if (!Array.isArray(api.models)) api.models = []
+      api.models.push({ name: trimmed, capability })
+      return true
+    }
+
+    function renderRows() {
+      rows.replaceChildren()
+      const models = Array.isArray(api.models) ? api.models : []
+      if (!models.length) {
+        const empty = document.createElement('div')
+        empty.className = 'enh-model-empty'
+        empty.textContent = '还没有模型。点「获取模型清单」，或手动填一个。'
+        rows.appendChild(empty)
+        return
+      }
+      models.forEach((model, index) => {
+        const row = document.createElement('div')
+        row.className = 'enh-model-row'
+        const name = document.createElement('span')
+        name.className = 'enh-model-name'
+        name.textContent = model.name
+        name.title = model.name
+        const status = document.createElement('span')
+        status.className = 'enh-model-status'
+        const test = document.createElement('button')
+        test.type = 'button'
+        test.className = 'btn-ghost'
+        test.textContent = '测试'
+        test.addEventListener('click', async () => {
+          test.disabled = true
+          status.className = 'enh-model-status'
+          setStatus(status, '测试中…')
+          try {
+            const credentials = await probeCredentials(api)
+            const result = await probeBackend('model-test', { ...credentials, model: model.name })
+            status.className = `enh-model-status ${result.ok ? 'ok' : 'bad'}`
+            setStatus(status, result.message || (result.ok ? '可用' : '不可用'))
+          } catch (error) {
+            status.className = 'enh-model-status bad'
+            setStatus(status, error?.message || String(error))
+          } finally {
+            test.disabled = false
+          }
+        })
+        const remove = document.createElement('button')
+        remove.type = 'button'
+        remove.className = 'btn-ghost'
+        remove.textContent = '移除'
+        remove.addEventListener('click', () => {
+          api.models.splice(index, 1)
+          renderRows()
+        })
+        const capability = capabilitySelect(model.capability, (value) => { model.capability = value })
+        row.append(name, capability, test, remove, status)
+        rows.appendChild(row)
+      })
+    }
+
+    function renderPicker(names) {
+      picker.replaceChildren()
+      picker.hidden = false
+      const head = document.createElement('div')
+      head.className = 'enh-model-picker-head'
+      const title = document.createElement('span')
+      title.textContent = `上游返回 ${names.length} 个模型，勾选要添加的：`
+      const filter = document.createElement('input')
+      filter.type = 'search'
+      filter.className = 'enh-model-filter'
+      filter.placeholder = '筛选'
+      const close = document.createElement('button')
+      close.type = 'button'
+      close.className = 'btn-ghost'
+      close.textContent = '收起'
+      close.addEventListener('click', () => { picker.hidden = true })
+      head.append(title, filter, close)
+
+      const options = document.createElement('div')
+      options.className = 'enh-model-options'
+      const boxes = names.map((name) => {
+        const label = document.createElement('label')
+        label.className = 'enh-model-option'
+        const box = document.createElement('input')
+        box.type = 'checkbox'
+        // 已经在清单里的默认勾上并锁住，避免重复添加。
+        box.checked = hasModel(name, 'chat')
+        box.disabled = box.checked
+        label.append(box, document.createTextNode(name))
+        options.appendChild(label)
+        return { name, box, label }
+      })
+      filter.addEventListener('input', () => {
+        const keyword = filter.value.trim().toLowerCase()
+        for (const item of boxes) {
+          item.label.hidden = Boolean(keyword) && !item.name.toLowerCase().includes(keyword)
+        }
+      })
+
+      const capability = capabilitySelect('chat', () => {})
+      const confirm = document.createElement('button')
+      confirm.type = 'button'
+      confirm.className = 'btn-ghost'
+      confirm.textContent = '添加选中'
+      confirm.addEventListener('click', () => {
+        let added = 0
+        for (const item of boxes) {
+          if (item.box.disabled || !item.box.checked) continue
+          if (addModel(item.name, capability.value)) added += 1
+          item.box.disabled = true
+        }
+        renderRows()
+        showToast(added ? `已添加 ${added} 个模型` : '没有勾选新的模型')
+      })
+      const foot = document.createElement('div')
+      foot.className = 'enh-model-picker-foot'
+      const capLabel = document.createElement('span')
+      capLabel.textContent = '添加为：'
+      foot.append(capLabel, capability, confirm)
+      picker.append(head, options, foot)
+    }
+
+    fetchButton.addEventListener('click', async () => {
+      fetchButton.disabled = true
+      showWaiting('model-list', '正在获取模型清单，请稍候…')
+      try {
+        const result = await probeBackend('model-list', await probeCredentials(api))
+        if (!result.ok || !result.models?.length) {
+          showToast(result.message || '没有拿到模型清单')
+          return
+        }
+        renderPicker(result.models)
+        showToast(result.message || `上游提供 ${result.models.length} 个模型`)
+      } catch (error) {
+        showToast(`获取模型清单失败：${error?.message || error}`)
+      } finally {
+        hideWaiting('model-list')
+        fetchButton.disabled = false
+      }
+    })
+
+    function submitManual() {
+      if (addModel(manual.value)) {
+        manual.value = ''
+        renderRows()
+      } else if (manual.value.trim()) {
+        showToast('这个模型已经在清单里了')
+      }
+    }
+    manualAdd.addEventListener('click', submitManual)
+    manual.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return
+      // 设置弹窗里回车会顺手触发「保存」，这里必须掐住。
+      event.preventDefault()
+      submitManual()
+    })
+
+    renderRows()
+    block.append(caption, hint, bar, rows, picker)
+    return block
+  }
+
   function settingsHost(body) {
     // 新版设置面板把「多 API」单独分了一栏，注入到那个占位容器里；
     // 旧版没有占位容器，退回到「聊天」标题后面。
@@ -661,7 +945,13 @@
     }
     if (!body.isConnected || body.querySelector('.enh-settings-section')) return
     const draft = {
-      apiList: data.apiList.map((item) => ({ ...item, apiKey: '' })),
+      // models 要单独拷一层：模型清单块是就地改 entry 的 capability 的，
+      // 浅拷贝会让草稿和 data 共用同一批对象。
+      apiList: data.apiList.map((item) => ({
+        ...item,
+        apiKey: '',
+        models: (Array.isArray(item.models) ? item.models : []).map((model) => ({ ...model })),
+      })),
       apiTimeoutSeconds: data.apiTimeoutSeconds,
       deepseekUrl: data.deepseekUrl,
       updateProxy: data.updateProxy || '',
@@ -685,10 +975,10 @@
     section.className = 'enh-settings-section'
     const heading = document.createElement('h3')
     heading.className = 'settings-section-title'
-    heading.textContent = '多 API 与 DeepSeek'
+    heading.textContent = 'API 渠道与 DeepSeek'
     const description = document.createElement('div')
     description.className = 'hint enh-section-hint'
-    description.textContent = '按列表顺序为模型查找可用 API；卡片默认折叠，点右侧的 ▾ 展开填写地址和密钥，按住左侧的 ⋮⋮ 手柄可拖动调整顺序。API Key 以明文保存在本地配置文件中，以便多台电脑间同步。'
+    description.textContent = '每个渠道各自维护一份模型清单，选中哪个渠道的模型就只调那个渠道，不会自动换别家。卡片默认折叠，点右侧的 ▾ 展开填写地址、密钥和模型，按住左侧的 ⋮⋮ 手柄可拖动调整顺序。API Key 以明文保存在本地配置文件中，以便多台电脑间同步。'
     const list = document.createElement('div')
     list.className = 'enh-api-list'
     // 拖动排序只在这里挂一次：列表重绘换的是子节点，容器本身一直是同一个。
@@ -697,13 +987,33 @@
       onReorder: (from, to) => {
         const [moved] = draft.apiList.splice(from, 1)
         draft.apiList.splice(to, 0, moved)
-        renderApiList()
+        renderApiListKeepingScroll()
       },
     })
 
     // 展开着的卡片 id。刻意只存在这个闭包里：每次打开设置页 injectSettings
     // 都会重跑一遍，于是一律从「全部折叠」开始，不做持久化。
     const expandedIds = new Set()
+
+    /**
+     * 重绘列表，并让滚动位置**保持不动**。
+     *
+     * renderApiList() 是整表 replaceChildren：子节点一清空，滚动容器的
+     * scrollHeight 瞬间归零，浏览器会把 scrollTop 夹到 0。等新节点补回来，
+     * 滚动位置已经丢了——表现就是点一下 ▾ 展开，整个设置弹窗弹回最顶上，
+     * 卡片多的时候每展开一个都要重新滚下来找。
+     *
+     * 滚的不是 .enh-api-list 自己而是它的某个祖先（当前是设置弹窗的
+     * .modal-body），所以用 scrollableAncestor() 运行时找，不写死类名。
+     * 记录/还原都在同一个同步任务里做，中间不会被绘制打断，所以不会闪。
+     */
+    function renderApiListKeepingScroll() {
+      const scroller = scrollableAncestor(list)
+      const top = scroller ? scroller.scrollTop : 0
+      renderApiList()
+      // 卡片收起后总高度可能变矮，浏览器会自己夹到新的最大值，这里不用再判断。
+      if (scroller) scroller.scrollTop = top
+    }
 
     function renderApiList() {
       list.replaceChildren()
@@ -733,7 +1043,7 @@
         toggle.addEventListener('click', () => {
           if (expanded) expandedIds.delete(api.id)
           else expandedIds.add(api.id)
-          renderApiList()
+          renderApiListKeepingScroll()
         })
         header.append(handle, name, toggle)
         card.append(header)
@@ -757,7 +1067,7 @@
         remove.addEventListener('click', () => {
           expandedIds.delete(api.id)
           draft.apiList.splice(index, 1)
-          renderApiList()
+          renderApiListKeepingScroll()
         })
         const actions = document.createElement('div')
         actions.className = 'enh-api-actions'
@@ -802,7 +1112,7 @@
         })
         keyControls.append(key, reveal)
         keyRow.append(keyLabel, keyControls)
-        card.append(actions, urlField.field, keyRow)
+        card.append(actions, urlField.field, keyRow, buildModelBlock(api))
         list.appendChild(card)
       })
       if (!draft.apiList.length) {
@@ -826,11 +1136,15 @@
         apiKey: '',
         hasKey: false,
         enabled: true,
+        models: [],
       })
       // 新加的直接展开：刚点完「添加」就是要填地址和密钥，
       // 折叠着只会多一次点击。
       expandedIds.add(id)
-      renderApiList()
+      renderApiListKeepingScroll()
+      // 「添加 API」按钮在列表下方，用户本来就停在底部；保持滚动位置之后
+      // 再把新卡片带进视野，免得它正好落在按钮下面看不见。
+      list.lastElementChild?.scrollIntoView({ block: 'nearest' })
     })
 
     const timeout = createInput('单个 API 无响应超时（秒）', draft.apiTimeoutSeconds, (value) => {
@@ -860,20 +1174,12 @@
       draft.prompts[key] = value
     }, { multiline: true, rows: 2 }))
 
-    const matches = document.createElement('div')
-    matches.className = 'enh-model-matches hint'
-    const matchEntries = Object.entries(data.modelMatches || {})
-    matches.textContent = matchEntries.length
-      ? `已记住：${matchEntries.map(([model, item]) => `${model} → ${item.apiName}`).join('；')}`
-      : '当前还没有已记住的模型/API 匹配。'
-
     renderApiList()
     section.append(
       heading, description, list, add, timeout.field, deepseek.field,
       updateProxy.field, updateProxyHint, promptHeading,
     )
     for (const item of promptFields) section.appendChild(item.field)
-    section.appendChild(matches)
     if (host.slot) host.slot.replaceChildren(section)
     else host.heading.insertAdjacentElement('afterend', section)
 

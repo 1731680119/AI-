@@ -18,6 +18,7 @@ import urllib.request
 from typing import Any
 
 import logging_config as diag
+import model_params
 
 
 REQUEST_TIMEOUT_SECONDS = 30
@@ -71,10 +72,26 @@ def _headers(api_key: str) -> dict[str, str]:
     }
 
 
+def _opener() -> urllib.request.OpenerDirector:
+    """探测专用的 opener：**只认环境变量里的代理，不读 Windows 注册表**。
+
+    默认的 `urlopen` 走 `getproxies()`，在 Windows 上会把「Internet 选项」里
+    那份系统代理也算进来；而真正发对话请求的 llm.py 用的是 openai/httpx，
+    httpx 只认 HTTP_PROXY / HTTPS_PROXY 环境变量。两边不一致的后果很难查：
+    系统里挂着一个早就不监听的代理（常见于装过加速器、代理软件退出后没清
+    注册表）时，聊天照常能用，一点「获取模型清单 / 测试」就报
+    `[WinError 10061] 目标计算机积极拒绝`——看着像上游挂了，其实请求根本没
+    出本机。所以这里显式对齐 httpx 的行为，只吃环境变量。
+    """
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler(urllib.request.getproxies_environment())
+    )
+
+
 def _request(url: str, api_key: str, body: dict | None, timeout: int) -> tuple[int, bytes, str]:
     data = json.dumps(body, ensure_ascii=False).encode("utf8") if body is not None else None
     request = urllib.request.Request(url, data=data, headers=_headers(api_key))
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with _opener().open(request, timeout=timeout) as response:
         content_type = (response.headers.get("Content-Type") or "").lower()
         return response.status, response.read(), content_type
 
@@ -199,7 +216,15 @@ def list_models(base_url: str, api_key: str) -> dict:
         endpoint=endpoint, model_count=len(models), elapsed_ms=elapsed,
     )
     if not models:
-        return {"ok": False, "message": "接口通了，但没有返回任何模型", "endpoint": endpoint,
+        # 上游认了这个密钥（HTTP 200），只是清单是空的，典型响应就是
+        # {"data": [], "object": "list"}。这不是地址填错，而是这个密钥所在的
+        # 分组一个模型都没授权——同一个 Base URL 换个密钥往往就能拿到几十个。
+        # 原来只说「没有返回任何模型」，用户会一直去改地址，方向就错了。
+        return {"ok": False,
+                "message": f"{endpoint} 通了，但这个密钥拿到的清单是空的。"
+                           "地址没问题，多半是该密钥所属的分组没有授权任何模型——"
+                           "换个密钥试试，或直接在下面手动填模型名。",
+                "endpoint": endpoint,
                 "models": [], "elapsed_ms": elapsed, "http_status": 0}
     return {"ok": True, "message": f"上游提供 {len(models)} 个模型", "endpoint": endpoint,
             "models": models, "elapsed_ms": elapsed, "http_status": 0}
@@ -228,7 +253,18 @@ def test_model(base_url: str, api_key: str, model: str) -> dict:
         base_url=base_url, model=model, api_key=diag.mask_secret(api_key),
     )
     try:
-        payload, _ = _fetch(base_url, "chat/completions", api_key, body, TEST_TIMEOUT_SECONDS)
+        # 走兼容层：GPT-5 / o 系列只认 max_completion_tokens，直接发 max_tokens
+        # 会被 400 顶回来。测试按钮要是照着原样报错，用户看到的就是「这个模型不
+        # 可用」——而它其实是能用的，只是参数名要换。
+        # _fetch 是位置参数，这里用关键字展开把请求体重新收回成 dict。
+        payload, _ = model_params.request_with_healing(
+            lambda **sent: _fetch(
+                base_url, "chat/completions", api_key, sent, TEST_TIMEOUT_SECONDS
+            ),
+            base_url,
+            model,
+            body,
+        )
     except ProbeError as error:
         diag.log_event(
             "WARNING", "backend", "模型测试失败", logger="backend.model_probe",

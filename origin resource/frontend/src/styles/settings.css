@@ -38,6 +38,37 @@
 .modal-settings { width: min(880px, 94vw); height: min(680px, 86vh); position: relative; }
 
 /*
+ * 未保存改动的确认框（1.2.19）。它是设置弹窗 `.modal-overlay` 的直接子元素，
+ * 自己不再叠一层遮罩——两层半透明黑叠起来会明显变暗，看着像出错了。
+ * `position: fixed` + 高一档的 z-index 让它压在设置弹窗上面；设置弹窗最大化时
+ * 铺满整屏，靠层级而不是靠位置来保证它可见。
+ */
+.confirm-dirty {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 110;
+  width: min(400px, 88vw);
+  padding: 20px 22px 16px;
+  border-radius: 14px;
+  background: var(--bg-panel);
+  box-shadow: 0 14px 48px rgba(0, 0, 0, 0.35);
+}
+.confirm-dirty h3 { margin: 0 0 8px; font-size: 16px; color: var(--text); }
+.confirm-dirty p {
+  margin: 0 0 18px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.confirm-dirty-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/*
  * 最大化：铺满整个应用窗口。用 !important 是因为手动拖过尺寸后元素上带着
  * 内联的 width/height，不压过去按钮就点了没反应。
  */

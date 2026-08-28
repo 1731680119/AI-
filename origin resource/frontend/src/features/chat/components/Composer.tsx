@@ -7,6 +7,7 @@ import { useStore } from '../../../store'
 import { uploadFile } from '../../../services/api'
 import { useFileDrop } from '../../../hooks/useFileDrop'
 import { useSortableList } from '../../../hooks/useSortableList'
+import { useDesktopChannels, groupByChannel } from '../../../hooks/useDesktopChannels'
 import type { Attachment } from '../../../types'
 
 const THINKING_OPTIONS = ['auto', 'minimal', 'low', 'medium', 'high'] as const
@@ -33,6 +34,8 @@ export function Composer() {
   const loadMemories = useStore((s) => s.loadMemories)
   const thinkingLevel = useStore((s) => s.thinkingLevel)
   const setThinkingLevel = useStore((s) => s.setThinkingLevel)
+  const chatApiId = useStore((s) => s.chatApiId)
+  const setChatApiId = useStore((s) => s.setChatApiId)
 
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -175,9 +178,9 @@ export function Composer() {
   /**
    * 模型菜单里的拖动排序。
    *
-   * 顺序直接写回 `settings.models`——那个数组本来就是"我关注的模型"的清单，
-   * 它的顺序只影响这个菜单怎么排，和桌面端「多 API」列表的故障转移优先级
-   * 是两回事，互不干扰。
+   * 只在「没有渠道模型清单」这条退路上生效（浏览器里，或者用户一家都没点过
+   * 「获取模型清单」）。顺序直接写回 `settings.models`——那个数组本来就是
+   * 「我关注的模型」的清单，它的顺序只影响这个菜单怎么排。
    */
   const modelSort = useSortableList(models.length, (from, to) => {
     if (!settings) return
@@ -186,6 +189,26 @@ export function Composer() {
     next.splice(to, 0, moved)
     void saveSettings({ ...settings, models: next })
   })
+
+  // 桌面端按渠道分组列模型：A 家的 GPT 和 B 家的 GPT 是两个可选项，
+  // 选中时连渠道 id 一起记下来，请求就只发给这一家。
+  const { supported: channelsSupported, channels, refresh: refreshChannels } = useDesktopChannels()
+  const chatGroups = groupByChannel(channels, 'chat')
+  const grouped = channelsSupported && chatGroups.length > 0
+  const activeChannelName = chatGroups.find((g) => g.id === chatApiId)?.name || ''
+
+  const openModelMenu = () => {
+    // 每次打开都重新拉：渠道的模型清单可能刚在设置页里被获取或增删过。
+    if (!modelMenu) void refreshChannels()
+    setModelMenu((v) => !v)
+  }
+
+  /** 选定「某家渠道的某个模型」：模型名进设置（能跨重启），渠道 id 只记本次运行。 */
+  const pickModel = (name: string, apiId: string | null) => {
+    if (settings && name !== model) void saveSettings({ ...settings, default_model: name })
+    setChatApiId(apiId)
+    setModelMenu(false)
+  }
 
   // 已有会话读库里的风格，新会话读 pending，都没有就落到默认风格。
   const styles = settings?.styles || []
@@ -420,11 +443,39 @@ export function Composer() {
 
           <div className="composer-right">
             <div className="model-select" ref={menuRef}>
-              <button className="model-btn" onClick={() => setModelMenu((v) => !v)}>
+              <button
+                className="model-btn"
+                title={activeChannelName ? `${activeChannelName} · ${model}` : model}
+                onClick={openModelMenu}
+              >
+                {activeChannelName && <span className="model-btn-channel">{activeChannelName}</span>}
                 {model}
                 <ChevronDown size={14} />
               </button>
-              {modelMenu && (
+              {modelMenu && (grouped ? (
+                <div className="model-menu model-menu-grouped">
+                  {chatGroups.map((group) => (
+                    <div className="model-group" key={group.id}>
+                      <div className="model-group-title">{group.name}</div>
+                      {group.models.map((m) => {
+                        // 同名模型可能出现在多家渠道下，所以要连渠道一起比。
+                        const active = m === model && group.id === chatApiId
+                        return (
+                          <div
+                            key={`${group.id}::${m}`}
+                            className={`model-item ${active ? 'active' : ''}`}
+                            title={`${group.name} · ${m}`}
+                            onClick={() => pickModel(m, group.id)}
+                          >
+                            <span>{m}</span>
+                            {active && <Check size={14} />}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ))}
+                </div>
+              ) : (
                 <div className="model-menu sortable-list" ref={modelSort.containerRef}>
                   {models.map((m, i) => {
                     const sortProps = modelSort.itemProps(i)
@@ -434,10 +485,7 @@ export function Composer() {
                         {...sortProps}
                         className={`model-item ${m === model ? 'active' : ''} ${sortProps.className}`}
                         title="拖动可调整顺序"
-                        onClick={() => {
-                          if (settings) saveSettings({ ...settings, default_model: m })
-                          setModelMenu(false)
-                        }}
+                        onClick={() => pickModel(m, null)}
                       >
                         <span>{m}</span>
                         {m === model && <Check size={14} />}
@@ -445,7 +493,7 @@ export function Composer() {
                     )
                   })}
                 </div>
-              )}
+              ))}
             </div>
 
             {streaming ? (

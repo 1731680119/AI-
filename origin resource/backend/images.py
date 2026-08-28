@@ -8,7 +8,6 @@ from datetime import datetime
 
 from openai import OpenAI
 
-import database as db
 import logging_config as diag
 from paths import IMAGES_DIR as APP_IMAGES_DIR
 
@@ -28,45 +27,36 @@ def get_client(settings: dict) -> OpenAI:
 
 
 def _attempts(settings: dict, model: str) -> list[tuple[OpenAI, str, str]]:
-    """按 image_providers 的顺序返回 (client, 实际模型, 渠道名)。
+    """只返回一条：当前生效的那个渠道。
 
-    模型取渠道自己填的那个，没填才用调用方传进来的——同一个 key 在不同中转站
-    往往对应不同的模型名，一路沿用第一个渠道的模型名换到第二个就会 404。
-    列表为空（老数据只填了那三个扁平字段）时退化成单渠道，行为和以前一致。
+    1.2.19 起图片和对话共用桌面端的「多 API」，用户在图片页的模型选择器里
+    选的是「某渠道的某个模型」，桌面层在发请求前把那条渠道的地址和密钥临时
+    写进 image_base_url / image_api_key。所以这里没有别家可以换——和聊天侧
+    「选了谁就只调谁」是同一套语义。
     """
-    providers = db.active_image_providers(settings)
-    if not providers:
-        return [(get_client(settings), model, "图片渠道")]
-    attempts: list[tuple[OpenAI, str, str]] = []
-    for provider in providers:
-        kwargs = {"api_key": provider.get("api_key")}
-        if provider.get("base_url"):
-            kwargs["base_url"] = provider["base_url"]
-        attempts.append((
-            OpenAI(**kwargs),
-            provider.get("model") or model,
-            provider.get("name") or "未命名渠道",
-        ))
-    return attempts
+    return [(get_client(settings), model, "图片渠道")]
 
 
 def _with_failover(settings: dict, model: str, call, action: str):
-    """按渠道顺序调用 `call(client, model)`，失败就换下一个渠道重试。
+    """按当前渠道调用 `call(client, model)`。
 
-    和多 API 那边同一套语义：顺序即优先级，全部失败时把最后一个错误抛出去，
-    让界面看到的是「最后一次尝试为什么不行」而不是一句笼统的失败。
+    名字沿用旧的，但 1.2.19 起 `_attempts` 只会给出一条，所以这里已经没有
+    「转移」可言：失败就原样把异常抛出去，让界面看到上游真实的报错，而不是
+    一句「所有渠道都不行」。**别再把多渠道轮询加回来**——渠道选择现在归
+    桌面端的多 API 管，在这里再轮一层会绕过用户的选择。
     """
     attempts = _attempts(settings, model)
     for index, (client, effective_model, name) in enumerate(attempts):
         try:
             return call(client, effective_model)
-        except Exception as error:  # noqa: BLE001 - 换渠道重试需要接住任何异常
+        except Exception as error:  # noqa: BLE001 - 留着是为了记一条带渠道名的日志
             if index + 1 >= len(attempts):
                 raise
             diag.log_event(
                 "WARNING", "backend", f"图片渠道「{name}」{action}失败，改用下一个渠道：{error}",
                 logger="backend.images", channel=name, model=effective_model,
             )
+
 
 
 def build_final_prompt(prompt: str, negative_prompt: str = "") -> str:

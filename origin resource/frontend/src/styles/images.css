@@ -286,6 +286,31 @@
   color: var(--text-muted);
   text-align: right;
 }
+
+/*
+ * 图片页的模型选择器（1.2.19）。复用输入框那套 .model-select / .model-btn /
+ * .model-menu，只在这里加作用域覆盖，别动那几条公共规则（CLAUDE.md §5）。
+ *
+ * 这一行在表单最底部，所以沿用 .model-menu 默认的向上弹是对的；但表单本身
+ * 会滚动，菜单必须限高，否则渠道一多就顶出可视区。限高由
+ * .model-menu-grouped 提供，这里只补一个边框让它在浅色表单里看得出是按钮。
+ */
+.image-model-select .model-btn {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
+  color: var(--text);
+  padding: 8px 12px;
+  max-width: 260px;
+}
+.image-model-select .model-btn:hover { background: var(--bg-hover); }
+/* 一条绘画模型都没有时的占位。给足宽度，否则菜单会被这段话挤成一条竖线。 */
+.model-menu-empty {
+  padding: 10px 12px;
+  max-width: 280px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
 .image-submit {
   display: flex;
   align-items: center;

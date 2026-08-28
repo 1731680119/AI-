@@ -43,7 +43,10 @@ const DEFAULT_ENHANCEMENTS = {
     findIssues: '检查以下代码并找出问题：\n\n{content}',
     optimizeCode: '优化以下代码，并说明优化内容：\n\n{content}',
   },
-  modelApiMap: {},
+  // 1.2.16 起没有「模型 → 渠道」的自动记忆了：模型清单挂在各渠道自己名下，
+  // 用户选的就是「某渠道的某模型」，不需要再猜。旧版的 modelApiMap 和全局
+  // models 清单迁移时备份到这里，不直接删——万一要回退还能捞回来。
+  legacy: null,
   legacyApiMigrated: false,
   // 检查更新时，直连和自动降级都失败后使用的 HTTP 代理地址（host:port）。
   // 留空表示只用自动探测到的系统代理。见 net-fallback.cjs。
@@ -78,6 +81,10 @@ const backendStderrTail = []
 const windows = new Map()
 const allowedToClose = new Set()
 const apiAttemptLocks = new Map()
+// 哪些窗口的设置弹窗里有未保存的改动（由渲染进程用 setSettingsDirty 报上来）。
+const settingsDirtyWindows = new Set()
+// 哪些窗口正等着页面答复「要不要保存」。用来兜住页面不答复的情况。
+const pendingCloseWindows = new Set()
 
 // 桌面设置放在 userData/data/ 而不是 userData/ 根目录：
 // data/ 是多机同步 junction 的挂载点（指向仓库 user-data/），放根目录就同步不到。
@@ -121,17 +128,48 @@ process.on('unhandledRejection', (reason) => {
   )
 })
 
+/** 单个模型条目：`{ name, capability }`，capability 是 'chat' 或 'image'。 */
+function normalizeModelEntry(raw) {
+  const name = typeof raw === 'string' ? raw.trim() : String(raw?.name || '').trim()
+  if (!name) return null
+  const capability = raw?.capability === 'image' ? 'image' : 'chat'
+  return { name, capability }
+}
+
+/** 渠道自带模型清单，同一渠道内按 name + capability 去重。 */
+function normalizeApiItem(raw) {
+  const seen = new Set()
+  const models = (Array.isArray(raw?.models) ? raw.models : [])
+    .map(normalizeModelEntry)
+    .filter((item) => {
+      if (!item) return false
+      const key = `${item.capability}::${item.name}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  return { ...raw, models }
+}
+
 function normalizeEnhancements(value = {}) {
   const prompts = { ...DEFAULT_ENHANCEMENTS.prompts, ...(value.prompts || {}) }
-  return {
+  // 旧版的「模型 → 渠道」记忆退役，但不当场扔掉：备份进 legacy，回退时还能捞。
+  const legacy = value.legacy && typeof value.legacy === 'object'
+    ? value.legacy
+    : (value.modelApiMap && Object.keys(value.modelApiMap).length
+      ? { modelApiMap: value.modelApiMap, savedAt: new Date().toISOString() }
+      : null)
+  const settings = {
     ...DEFAULT_ENHANCEMENTS,
     ...value,
-    apiList: Array.isArray(value.apiList) ? value.apiList : [],
+    apiList: (Array.isArray(value.apiList) ? value.apiList : []).map(normalizeApiItem),
     apiTimeoutSeconds: Math.min(120, Math.max(3, Number(value.apiTimeoutSeconds) || 15)),
     prompts,
-    modelApiMap: value.modelApiMap && typeof value.modelApiMap === 'object' ? value.modelApiMap : {},
+    legacy,
     updateProxy: typeof value.updateProxy === 'string' ? value.updateProxy.trim() : '',
   }
+  delete settings.modelApiMap
+  return settings
 }
 
 function loadDesktopSettings() {
@@ -218,7 +256,6 @@ function decryptLegacyApiKey(value) {
 }
 
 function publicEnhancementSettings() {
-  const apiNames = new Map(enhancements.apiList.map((item) => [item.id, item.name]))
   return {
     // 这里的解构是把明文 apiKey 从返回值里剔掉——渲染进程只该拿到 hasKey，
     // 真要看明文得走 desktop:reveal-api-key。改这行前先想清楚。
@@ -230,22 +267,7 @@ function publicEnhancementSettings() {
     deepseekUrl: enhancements.deepseekUrl,
     prompts: enhancements.prompts,
     updateProxy: enhancements.updateProxy,
-    modelMatches: Object.fromEntries(
-      Object.entries(enhancements.modelApiMap)
-        .filter(([, apiId]) => apiNames.has(apiId))
-        .map(([model, apiId]) => [model, { apiId, apiName: apiNames.get(apiId) }]),
-    ),
   }
-}
-
-function apiFingerprint(apiList) {
-  return JSON.stringify(apiList.map((item) => ({
-    id: item.id,
-    name: item.name,
-    baseUrl: item.baseUrl,
-    enabled: item.enabled,
-    apiKey: item.apiKey,
-  })))
 }
 
 function normalizeBaseUrl(value) {
@@ -275,10 +297,12 @@ function saveEnhancementSettings(payload) {
     const baseUrl = normalizeBaseUrl(raw.baseUrl)
     // 前端只在用户改动时才带上 apiKey，没带就沿用已存的那份。
     const apiKey = raw.apiKey ? String(raw.apiKey) : previous?.apiKey || ''
-    return { id, name, baseUrl, apiKey, enabled: raw.enabled !== false }
+    // 模型清单跟着渠道走：前端没带 models 就沿用已存的那份，别在保存别的
+    // 字段时顺手把用户「获取模型清单」的结果清空。
+    const models = Array.isArray(raw.models) ? raw.models : previous?.models || []
+    return normalizeApiItem({ id, name, baseUrl, apiKey, enabled: raw.enabled !== false, models })
   })
 
-  const previousFingerprint = apiFingerprint(enhancements.apiList)
   enhancements.apiList = apiList
   enhancements.apiTimeoutSeconds = Math.min(120, Math.max(3, Number(payload.apiTimeoutSeconds) || 15))
   enhancements.deepseekUrl = normalizeWebUrl(payload.deepseekUrl || DEFAULT_ENHANCEMENTS.deepseekUrl)
@@ -287,9 +311,6 @@ function saveEnhancementSettings(payload) {
     ...(payload.prompts || {}),
   }
   enhancements.updateProxy = String(payload.updateProxy || '').trim()
-  if (previousFingerprint !== apiFingerprint(apiList)) {
-    enhancements.modelApiMap = {}
-  }
   saveDesktopSettings()
   return publicEnhancementSettings()
 }
@@ -339,7 +360,6 @@ async function migrateLegacyApiSettings() {
       })
     }
     enhancements.legacyApiMigrated = true
-    enhancements.modelApiMap = {}
     saveDesktopSettings()
     await requestBackend('PUT', '/api/settings', { base_url: '', api_key: '' })
   } catch (error) {
@@ -597,6 +617,20 @@ async function askCloseAction(window) {
 function handleWindowClose(event, window) {
   if (isQuitting || allowedToClose.delete(window.id)) return
   event.preventDefault()
+  // 设置弹窗里有没保存的改动时，先把决定权交回页面——原生 dialog 弹不出
+  // 「保存并关闭」这个动作（保存要走前端的 draft 和 saveSettings），
+  // 所以这里只拦住关窗，让渲染进程弹自己那个三选一的框。
+  if (settingsDirtyWindows.has(window.id)) {
+    if (pendingCloseWindows.has(window.id)) {
+      // 已经问过一次还没答复，说明页面卡住或用户在连点。第二次直接放行，
+      // 免得窗口彻底关不掉。
+      closeWindowWithoutPrompt(window)
+      return
+    }
+    pendingCloseWindows.add(window.id)
+    window.webContents.send('desktop:close-requested')
+    return
+  }
   if (closePreference === 'tray') minimizeWindowToTray(window)
   else if (closePreference === 'close') closeWindowWithoutPrompt(window)
   else void askCloseAction(window)
@@ -814,6 +848,8 @@ function createWindow() {
     destroyWindowTray(window.id)
     for (const tab of record.deepseekTabs.values()) clearTimeout(tab.promptTimer)
     windows.delete(window.id)
+    settingsDirtyWindows.delete(window.id)
+    pendingCloseWindows.delete(window.id)
     scheduleShutdownIfEmpty()
   })
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -825,7 +861,13 @@ function createWindow() {
     event.preventDefault()
     if (url.startsWith('http://') || url.startsWith('https://')) void shell.openExternal(url)
   })
-  window.webContents.on('did-finish-load', () => void injectEnhancements(window))
+  window.webContents.on('did-finish-load', () => {
+    // 页面重载后渲染进程的 state 全没了，设置弹窗也不在了，脏标记必须跟着清。
+    // 漏了这条，刷新一次窗口就再也关不掉。
+    settingsDirtyWindows.delete(window.id)
+    pendingCloseWindows.delete(window.id)
+    void injectEnhancements(window)
+  })
   void window.loadURL(backendUrl)
   return window
 }
@@ -839,30 +881,45 @@ async function acquireApiLock() {
   return release
 }
 
-function apiAttemptPlan(model) {
+/**
+ * 解析出这次要打的那**一个**渠道。1.2.16 起不再轮询：用户选的是「某渠道的
+ * 某模型」，选了谁就只调谁，它报什么就原样呈现什么。
+ * 优先级：前端明确指定的 apiId → 自己模型清单里声明了该模型的渠道 → 第一个
+ * 启用的渠道（迁移后模型清单还是空的，这时候不该直接说「没有可用 API」）。
+ */
+function apiAttemptPlan(model, apiId) {
   const enabled = enhancements.apiList.filter((item) => item.enabled)
   if (!enabled.length) return []
-  const cachedId = enhancements.modelApiMap[model]
-  const cachedIndex = enabled.findIndex((item) => item.id === cachedId)
-  const ordered = cachedIndex >= 0
-    ? [...enabled.slice(cachedIndex), ...enabled.slice(0, cachedIndex)]
-    : enabled
-  return ordered.map(({ id, name }) => ({ id, name }))
+  const picked = (apiId && enabled.find((item) => item.id === apiId))
+    || enabled.find((item) => (item.models || []).some((entry) => entry.name === model))
+    || enabled[0]
+  return [{ id: picked.id, name: picked.name }]
 }
 
+/**
+ * 临时把某条渠道的地址和密钥写进后端设置，返回一个 token；请求结束必须拿
+ * token 调 finishApiAttempt 清掉。全局串行（apiLock），同一时刻只有一条渠道
+ * 生效。
+ *
+ * target 决定写哪一组字段：'chat' 写 base_url / api_key（/api/chat 读它们），
+ * 'image' 写 image_base_url / image_api_key（/api/images/* 读它们）。
+ * 1.2.19 图片并进多 API 后才有这个区分——写错一组的表现是请求打到上一次
+ * 残留的渠道上，不报错、只是画出来的图不是你选的那家。
+ */
 async function beginApiAttempt(payload) {
   const apiId = typeof payload === 'string' ? payload : payload?.apiId
+  const target = (typeof payload === 'string' ? '' : payload?.target) === 'image' ? 'image' : 'chat'
   const api = enhancements.apiList.find((item) => item.id === apiId && item.enabled)
   if (!api) throw new Error('API 配置不存在或已禁用')
   const release = await acquireApiLock()
   const token = crypto.randomUUID()
   const timer = setTimeout(() => finishApiAttempt(token).catch(() => {}), 45000)
-  apiAttemptLocks.set(token, { release, timer })
+  apiAttemptLocks.set(token, { release, timer, target })
   try {
-    await requestBackend('PUT', '/api/settings', {
-      base_url: normalizeBaseUrl(api.baseUrl),
-      api_key: api.apiKey || '',
-    })
+    await requestBackend('PUT', '/api/settings', apiSettingsPatch(target, {
+      baseUrl: normalizeBaseUrl(api.baseUrl),
+      apiKey: api.apiKey || '',
+    }))
     return token
   } catch (error) {
     clearTimeout(timer)
@@ -872,13 +929,24 @@ async function beginApiAttempt(payload) {
   }
 }
 
+/** 按用途拼出要 PUT 的那两个字段。 */
+function apiSettingsPatch(target, { baseUrl, apiKey }) {
+  return target === 'image'
+    ? { image_base_url: baseUrl, image_api_key: apiKey }
+    : { base_url: baseUrl, api_key: apiKey }
+}
+
 async function finishApiAttempt(token) {
   const lock = apiAttemptLocks.get(token)
   if (!lock) return false
   apiAttemptLocks.delete(token)
   clearTimeout(lock.timer)
   try {
-    await requestBackend('PUT', '/api/settings', { base_url: '', api_key: '' })
+    // 清的必须是当初写的那一组，否则图片请求跑完会把聊天的字段也抹掉
+    // （反过来同理），下一次请求就会因为「没配 API」被 400 顶回来。
+    await requestBackend('PUT', '/api/settings', apiSettingsPatch(lock.target, {
+      baseUrl: '', apiKey: '',
+    }))
   } catch (error) {
     console.error('清除临时 API 设置失败', error)
   } finally {
@@ -887,46 +955,9 @@ async function finishApiAttempt(token) {
   return true
 }
 
-function cleanupFailedAttempt(payload) {
-  const databasePath = path.join(app.getPath('userData'), 'data', 'chatbot.db')
-  if (!fs.existsSync(databasePath) || !payload?.conversationId) return false
-  const { DatabaseSync } = require('node:sqlite')
-  const database = new DatabaseSync(databasePath)
-  try {
-    database.exec('PRAGMA foreign_keys=ON; BEGIN IMMEDIATE;')
-    let activeLeafId = payload.parentId || null
-    if (payload.assistantMessageId) {
-      if (payload.regenerate) {
-        const row = database.prepare('SELECT parent_id FROM messages WHERE id=? AND conversation_id=?').get(
-          payload.assistantMessageId,
-          payload.conversationId,
-        )
-        activeLeafId = row?.parent_id || activeLeafId
-      }
-      database.prepare('DELETE FROM messages WHERE id=? AND conversation_id=?').run(
-        payload.assistantMessageId,
-        payload.conversationId,
-      )
-    }
-    if (payload.userMessageId && !payload.regenerate) {
-      database.prepare('DELETE FROM messages WHERE id=? AND conversation_id=?').run(
-        payload.userMessageId,
-        payload.conversationId,
-      )
-    }
-    database.prepare('UPDATE conversations SET active_leaf_id=? WHERE id=?').run(
-      activeLeafId,
-      payload.conversationId,
-    )
-    database.exec('COMMIT;')
-    return true
-  } catch (error) {
-    try { database.exec('ROLLBACK;') } catch {}
-    throw error
-  } finally {
-    database.close()
-  }
-}
+// 这里原来有个 cleanupFailedAttempt()：轮询时每个渠道失败都会往数据库里塞一
+// 轮消息，得直接开 sqlite 把它删掉再换下一家。现在只打一个渠道、失败就原样报
+// 错，没有要回滚的中间态了，所以整块删掉——别再把 node:sqlite 直连加回来。
 
 function installApplicationMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
@@ -961,6 +992,28 @@ ipcMain.handle('desktop:request-close', (event) => {
   return true
 })
 ipcMain.handle('desktop:get-window-count', () => windows.size)
+ipcMain.handle('desktop:set-settings-dirty', (event, dirty) => {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (!window) return false
+  if (dirty) settingsDirtyWindows.add(window.id)
+  else settingsDirtyWindows.delete(window.id)
+  return true
+})
+ipcMain.handle('desktop:resolve-close', (event, action) => {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (!window) return false
+  pendingCloseWindows.delete(window.id)
+  if (action !== 'proceed') return true
+  // 页面已经处理完（存了或明确放弃），标记清掉再走原来那套关窗逻辑，
+  // 否则 handleWindowClose 会再拦一次。closePreference 还是 'ask' 的话，
+  // 紧接着还会问一次「关窗还是收托盘」——这两个问题问的不是一回事，
+  // 一个是数据要不要留，一个是窗口去哪，不合并。
+  settingsDirtyWindows.delete(window.id)
+  if (closePreference === 'tray') minimizeWindowToTray(window)
+  else if (closePreference === 'close') closeWindowWithoutPrompt(window)
+  else void askCloseAction(window)
+  return true
+})
 ipcMain.handle('desktop:get-close-preference', () => closePreference)
 ipcMain.handle('desktop:set-close-preference', (_event, preference) => {
   if (!VALID_CLOSE_PREFERENCES.has(preference)) throw new Error('无效的关闭行为')
@@ -974,26 +1027,17 @@ ipcMain.handle('desktop:reveal-api-key', (_event, apiId) => {
   const api = enhancements.apiList.find((item) => item.id === apiId)
   return api ? api.apiKey || '' : ''
 })
-ipcMain.handle('desktop:get-api-plan', (_event, model) => {
-  const modelName = String(model || '')
-  const enabled = enhancements.apiList.filter((item) => item.enabled)
-  const cachedId = enhancements.modelApiMap[modelName]
+// 参数兼容字符串（只给模型名）和 `{ model, apiId }`（明确指定渠道）两种形式。
+ipcMain.handle('desktop:get-api-plan', (_event, payload) => {
+  const model = String((typeof payload === 'string' ? payload : payload?.model) || '')
+  const apiId = typeof payload === 'string' ? '' : String(payload?.apiId || '')
   return {
-    attempts: apiAttemptPlan(modelName),
+    attempts: apiAttemptPlan(model, apiId),
     timeoutMs: enhancements.apiTimeoutSeconds * 1000,
-    matched: Boolean(cachedId && enabled.some((item) => item.id === cachedId)),
   }
 })
 ipcMain.handle('desktop:begin-api-attempt', (_event, apiId) => beginApiAttempt(apiId))
 ipcMain.handle('desktop:end-api-attempt', (_event, token) => finishApiAttempt(token))
-ipcMain.handle('desktop:mark-api-success', (_event, { model, apiId }) => {
-  if (enhancements.apiList.some((item) => item.id === apiId && item.enabled)) {
-    enhancements.modelApiMap[String(model || '')] = apiId
-    saveDesktopSettings()
-  }
-  return true
-})
-ipcMain.handle('desktop:cleanup-api-attempt', (_event, payload) => cleanupFailedAttempt(payload))
 ipcMain.handle('desktop:show-context-menu', (event, payload) => {
   const window = BrowserWindow.fromWebContents(event.sender)
   if (!window || !payload?.text) return false

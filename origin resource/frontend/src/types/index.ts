@@ -169,18 +169,6 @@ export interface SearchProvider {
   max_output_tokens: number
 }
 
-/** 一套图片生成的上游配置。和多 API 一样按列表顺序故障转移。 */
-export interface ImageProvider {
-  id: string
-  /** 显示用的名字，例如「官方 gpt-image」「某中转站」。 */
-  name: string
-  base_url: string
-  api_key: string
-  /** 该渠道自己的模型名；留空则沿用设置里的 image_model。 */
-  model: string
-  enabled: boolean
-}
-
 /** 设置页「检测」按钮拿到的报告。ok 为真才代表真的能联网检索。 */
 export interface SearchTestResult {
   ok: boolean
@@ -228,11 +216,10 @@ export interface Settings {
   /** 默认思考档位：auto 表示不向上游发 reasoning_effort。 */
   default_thinking: string
   theme: 'light' | 'dark'
-  /** 图片渠道列表，顺序即故障转移顺序。 */
-  image_providers: ImageProvider[]
   /**
-   * 下面三个是第一个可用渠道的镜像，由后端在读设置时写好。
-   * 界面展示（当前模型、尺寸预设）仍读这里，不要拿它们当配置入口写。
+   * 图片渠道 1.2.19 起并进桌面端的「多 API」，这里不再有 image_providers。
+   * 下面三个字段由桌面层在发图片请求前后临时改写，**不是配置入口**，
+   * 界面上也不要展示它们（会一直是空的）。
    */
   image_base_url: string
   image_api_key: string

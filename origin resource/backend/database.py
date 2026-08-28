@@ -208,10 +208,12 @@ DEFAULT_SETTINGS = {
     # reasoning_effort。不是所有上游都认这个参数，所以默认保持 auto。
     "default_thinking": "auto",
     "theme": "light",
-    # 图片渠道和桌面端「多 API」一样存成有序列表：从上往下找第一个能用的，
-    # 失败了再试下一个。下面三个平铺字段是「当前生效渠道」的镜像，由
-    # _mirror_active_image_provider 维护，读的地方不用关心列表。
-    "image_providers": [],
+    # 1.2.19 起图片不再有自己的渠道列表：绘画和对话共用桌面端的「多 API」，
+    # 渠道在模型清单里把某个模型标成 capability='image' 就会出现在图片页的
+    # 模型选择器里。下面这三个字段不再由用户直接编辑，而是由桌面层在发
+    # /api/images/generate、/api/images/edit 之前临时写进来、请求完就清空
+    # （和聊天的 base_url / api_key 是同一套握手，见 07 §3）。
+    # 字段本身保留：后端和数据库读的一直是它们，去掉等于把整条链路重写。
     "image_base_url": "",
     "image_api_key": "",
     "image_model": "gpt-image-2",
@@ -319,54 +321,16 @@ def get_settings() -> dict:
     if merged.get("search_provider_id") not in ids:
         merged["search_provider_id"] = merged["search_providers"][0]["id"]
     merged["styles"] = _normalize_styles(merged.get("styles"))
-    merged["image_providers"] = _normalize_image_providers(merged.get("image_providers"))
-    # 旧版本的图片功能只能配一套，散在 image_base_url / image_api_key / image_model
-    # 三个字段里。列表为空且旧字段填过内容时，转成列表里的第一条。
-    if not merged["image_providers"] and (
-        merged.get("image_api_key") or merged.get("image_base_url")
-    ):
-        merged["image_providers"] = [{
-            "id": "default",
-            "name": "默认渠道",
-            "base_url": merged.get("image_base_url") or "",
-            "api_key": merged.get("image_api_key") or "",
-            "model": merged.get("image_model") or "",
-            "enabled": True,
-        }]
-    # 三个旧字段继续保留，作为「当前生效渠道」的镜像：图片页顶部显示的模型名
-    # 和后端的若干校验都还读它们，同步一份可以不用改那些地方。
-    _mirror_active_image_provider(merged)
+    # 1.2.19：图片渠道列表退役，绘画并进桌面端的「多 API」。旧库里可能还存着
+    # image_providers，必须从库里删掉——前端保存设置是把 GET 的结果整份 PUT
+    # 回来，而 SettingsPatch 是 extra="forbid"，留着它会让保存直接 422
+    # （和当年那批平铺搜索字段是同一个坑，见 04 §5）。
+    if "image_providers" in stored:
+        with get_db() as db:
+            db.execute("DELETE FROM settings WHERE key='image_providers'")
+    merged.pop("image_providers", None)
     merged["prompt_templates"] = _normalize_prompt_templates(merged.get("prompt_templates"))
     return merged
-
-
-def active_image_providers(settings: dict) -> list[dict]:
-    """按列表顺序返回可用的图片渠道（启用且填了密钥）。"""
-    return [
-        provider for provider in settings.get("image_providers") or []
-        if provider.get("enabled") is not False and (provider.get("api_key") or "").strip()
-    ]
-
-
-def _mirror_active_image_provider(settings: dict) -> None:
-    """把第一个可用渠道抄进 image_base_url / image_api_key / image_model。
-
-    列表非空但一个可用的都没有（全禁用或都没填密钥）时要把镜像清空，
-    否则删掉最后一个渠道之后，旧字段里残留的密钥还会继续把图画出来。
-    列表整个为空则不动——那是从没配过图片渠道的全新安装。
-    """
-    if not settings.get("image_providers"):
-        return
-    usable = active_image_providers(settings)
-    if not usable:
-        settings["image_base_url"] = ""
-        settings["image_api_key"] = ""
-        return
-    first = usable[0]
-    settings["image_base_url"] = first.get("base_url") or ""
-    settings["image_api_key"] = first.get("api_key") or ""
-    if first.get("model"):
-        settings["image_model"] = first["model"]
 
 
 # 旧版本的单套搜索配置字段，只在迁移时读一次，之后从库里删掉。
@@ -407,33 +371,9 @@ def _normalize_search_providers(stored) -> list[dict]:
     return result or [dict(p) for p in DEFAULT_SEARCH_PROVIDERS]
 
 
-def _normalize_image_providers(stored) -> list[dict]:
-    """把图片渠道列表补成固定形状，id 不重复。
-
-    和搜索配置不同，这里允许为空：一条图片渠道都没有时图片功能本来就没配好，
-    界面会提示去添加，没必要凭空造一条假的出来。顺序有意义——生成图片时
-    按列表从上往下找第一个能用的渠道，和桌面端「多 API」的故障转移一致。
-    """
-    if not isinstance(stored, list):
-        return []
-    result: list[dict] = []
-    seen: set[str] = set()
-    for index, item in enumerate(stored):
-        if not isinstance(item, dict):
-            continue
-        pid = str(item.get("id") or "") or f"image-{index}"
-        while pid in seen:
-            pid = f"{pid}-{index}"
-        seen.add(pid)
-        result.append({
-            "id": pid,
-            "name": str(item.get("name") or f"图片渠道 {index + 1}"),
-            "base_url": str(item.get("base_url") or ""),
-            "api_key": str(item.get("api_key") or ""),
-            "model": str(item.get("model") or ""),
-            "enabled": item.get("enabled") is not False,
-        })
-    return result
+# 这里原来有个 _normalize_image_providers()：图片渠道自成一份列表时用来补形状。
+# 1.2.19 图片并进桌面端「多 API」后，这个键连同它的归一化一起退役了，
+# get_settings 只负责把旧库里残留的 image_providers 删掉。
 
 
 def _normalize_prompt_templates(stored) -> list[dict]:

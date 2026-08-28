@@ -26,6 +26,14 @@ export interface ChatRequest {
   regenerate_from?: string
   continue_from?: string
   thinking?: string
+  /**
+   * 选中的 API 渠道 id（只有桌面端有意义）。
+   *
+   * 后端不用它——渠道地址和密钥由桌面层在发请求前临时写进全局设置。它存在的
+   * 唯一理由是桌面层注入的 fetch 补丁要从请求体里读出该调哪一家；后端的
+   * `ChatBody` 也声明了同名字段，免得被 pydantic 当多余字段悄悄丢掉。
+   */
+  api_id?: string
 }
 
 /**

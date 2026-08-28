@@ -7,6 +7,7 @@ from typing import Generator
 from openai import OpenAI
 
 import logging_config as diag
+import model_params
 
 
 log = diag.get_logger("llm")
@@ -36,11 +37,18 @@ def complete_text(
     """Small non-streaming call used by backend orchestration."""
     timer = diag.Timer()
     try:
-        response = build_client(settings).chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
+        # 各家上游认的参数名不一样（GPT-5 系列要 max_completion_tokens），
+        # 统一交给兼容层：先按规则改，被顶回来再按上游的提示改一次。
+        response = model_params.request_with_healing(
+            build_client(settings).chat.completions.create,
+            settings.get("base_url") or "",
+            model,
+            {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            },
         )
     except Exception as error:
         diag.log_exception(
@@ -290,7 +298,14 @@ def _stream_once(
         request_kwargs["tool_choice"] = "auto"
 
     try:
-        stream = client.chat.completions.create(**request_kwargs)
+        # 参数名各家不统一（GPT-5 系列只认 max_completion_tokens，有的中转站不接受
+        # reasoning_effort 和 tools 同时出现），交给兼容层按规则改 + 按 400 提示自愈。
+        stream = model_params.request_with_healing(
+            client.chat.completions.create,
+            settings.get("base_url") or "",
+            model,
+            request_kwargs,
+        )
     except Exception as e:
         diag.log_exception(
             "backend.llm", "发起流式请求失败", e,
@@ -561,20 +576,25 @@ def generate_title(settings: dict, model: str, first_user_msg: str) -> str:
     """根据首条消息生成简短标题"""
     client = build_client(settings)
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "请为以下对话生成一个简短的标题（不超过15个字，"
-                        "直接输出标题本身，不要引号和标点结尾）：\n\n"
-                        + first_user_msg[:500]
-                    ),
-                }
-            ],
-            max_tokens=50,
-            temperature=0.3,
+        resp = model_params.request_with_healing(
+            client.chat.completions.create,
+            settings.get("base_url") or "",
+            model,
+            {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "请为以下对话生成一个简短的标题（不超过15个字，"
+                            "直接输出标题本身，不要引号和标点结尾）：\n\n"
+                            + first_user_msg[:500]
+                        ),
+                    }
+                ],
+                "max_tokens": 50,
+                "temperature": 0.3,
+            },
         )
         title = (resp.choices[0].message.content or "").strip().strip('"“”')
         # 去掉可能混入的 think 标签

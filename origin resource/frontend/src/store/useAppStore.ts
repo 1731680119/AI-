@@ -74,6 +74,23 @@ export interface Store {
   /** 本次运行选定的思考档位；null 表示跟随设置里的默认档位。 */
   thinkingLevel: string | null
   setThinkingLevel: (level: string | null) => void
+  /**
+   * 本次运行选定的 API 渠道 id（桌面端专用）。
+   *
+   * 只放在内存里，和 thinkingLevel 一样是「本次运行」的选择：模型名存在
+   * `settings.default_model` 里能跨重启，渠道 id 存不了——后端 SettingsPatch 是
+   * extra="forbid"，加字段就得改后端和数据库。null 表示不指定，桌面层退回
+   * 「谁声明了这个模型就用谁」的判断，界面照旧能用。
+   */
+  chatApiId: string | null
+  setChatApiId: (apiId: string | null) => void
+
+  /**
+   * 图片页选中的多 API 渠道 id。和 chatApiId 同一套理由只放内存：模型名存在
+   * `settings.image_model` 里能跨重启，渠道 id 存不了。
+   */
+  imageApiId: string | null
+  setImageApiId: (apiId: string | null) => void
 
   // 图片功能状态
   mode: AppMode
@@ -180,6 +197,10 @@ export const useStore = create<Store>((set, get) => ({
   },
   thinkingLevel: null,
   setThinkingLevel: (level) => set({ thinkingLevel: level }),
+  chatApiId: null,
+  setChatApiId: (apiId) => set({ chatApiId: apiId }),
+  imageApiId: null,
+  setImageApiId: (apiId) => set({ imageApiId: apiId }),
 
   mode: 'chat',
   images: [],
@@ -341,6 +362,7 @@ export const useStore = create<Store>((set, get) => ({
           regenerate_from: opts.regenerateFrom,
           continue_from: opts.continueFrom,
           thinking: get().thinkingLevel || undefined,
+          api_id: get().chatApiId || undefined,
         },
         (ev) => {
           if (ev.type === 'thinking') {
@@ -551,7 +573,9 @@ export const useStore = create<Store>((set, get) => ({
     set({ imageBusy: true, error: null })
     logAction('生成图片', { model: req.model, size: req.size, quality: req.quality })
     try {
-      const rec = await api.generateImages(req)
+      // api_id 在这里补，和 sendMessage 一样：调用方只管「画什么」，
+      // 「用哪家渠道」是选择器写进 store 的全局状态。
+      const rec = await api.generateImages({ ...req, api_id: get().imageApiId || undefined })
       set((s) => ({ images: [rec, ...s.images], selectedImageId: rec.id }))
     } catch (e) {
       const failure = e as Error
@@ -566,7 +590,9 @@ export const useStore = create<Store>((set, get) => ({
     set({ imageBusy: true, error: null })
     logAction('编辑图片', { model: req.model, references: references.length })
     try {
-      const rec = await api.editImage(file, req, references)
+      const rec = await api.editImage(
+        file, { ...req, api_id: get().imageApiId || undefined }, references,
+      )
       set((s) => ({ images: [rec, ...s.images], selectedImageId: rec.id }))
     } catch (e) {
       const failure = e as Error

@@ -14,6 +14,9 @@
 
 .enh-api-list {
   display: grid;
+  /* 同 .enh-model-rows：不写死单列的话，grid 的 auto 列宽会被卡片里最长的
+     那行内容（比如一条完整的 503 报文）撑出容器。 */
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -24,6 +27,7 @@
  */
 .enh-api-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 9px;
   padding: 7px 10px;
   border: 1px solid var(--border, #ddd);
@@ -106,6 +110,162 @@
   flex: 1;
 }
 
+/*
+ * 每个渠道自己的模型清单块。整块由 buildModelBlock 生成，只重绘自己，
+ * 不惊动外面的地址、密钥输入框。
+ */
+.enh-model-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+}
+
+.enh-model-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+/* 手动填模型名的输入框要跟着宽度走，但别把两个按钮挤掉。 */
+.enh-model-bar .enh-model-manual {
+  flex: 1;
+  min-width: 140px;
+  width: auto !important;
+}
+
+.enh-model-rows {
+  display: grid;
+  /* 必须写死单列 minmax(0, 1fr)：grid 默认列宽是 auto（≈max-content），
+     行里塞进一条长错误信息时列会跟着撑宽，把整张卡顶出屏幕。 */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+}
+
+.enh-model-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  background: var(--bg, rgba(127, 127, 127, .03));
+}
+
+.enh-model-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 12px/1.5 ui-monospace, Consolas, monospace;
+}
+
+.enh-model-capability {
+  flex: none;
+  width: auto !important;
+  padding: 2px 6px !important;
+  font-size: 12px !important;
+}
+
+/* 测试结果贴在行尾，只占它需要的宽度，太长就截断（title 里有全文）。 */
+.enh-model-status {
+  /* 曾经是 flex: none，配 max-width: 40% 看着像有上限，其实两条都靠不住：
+     none 意味着不允许收缩，百分比又是相对已经被撑宽的行算的，于是
+     「测试」返回一大段 503 原文时整行一路长到屏幕外。改成允许收缩 +
+     min-width: 0，长文本才会真的被 ellipsis 截断。 */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-muted, #888);
+}
+
+.enh-model-status.ok {
+  color: #2e7d32;
+}
+
+.enh-model-status.bad {
+  color: #d33;
+}
+
+.enh-model-empty {
+  padding: 9px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  border: 1px dashed var(--border, #ccc);
+  border-radius: 8px;
+}
+
+.enh-model-picker {
+  display: grid;
+  gap: 7px;
+  padding: 9px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 9px;
+  background: rgba(127, 127, 127, .05);
+}
+
+.enh-model-picker-head,
+.enh-model-picker-foot {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+
+.enh-model-picker-head .enh-model-filter {
+  flex: 1;
+  min-width: 90px;
+  width: auto !important;
+  padding: 3px 7px !important;
+  font-size: 12px !important;
+}
+
+/* 中转站动辄返回几百个模型，这里限高滚动，别把设置弹窗撑爆。 */
+.enh-model-options {
+  display: grid;
+  gap: 3px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.enh-model-option {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+  margin: 0 !important;
+  padding: 2px 4px;
+  font: 12px/1.5 ui-monospace, Consolas, monospace;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.enh-model-option:hover {
+  background: rgba(127, 127, 127, .1);
+}
+
+/* 浏览器自带的 [hidden]{display:none} 优先级最低，被上面两条显式 display 直接盖掉。
+   于是 JS 里的 picker.hidden = true（收起按钮）和过滤时的 label.hidden 全都没有视觉效果——
+   不报错，只是点了没反应。加新的 enh- 元素时，凡是写了 display 又要靠 hidden 收起的，
+   都得在这里补一条。 */
+.enh-model-picker[hidden],
+.enh-model-option[hidden] {
+  display: none !important;
+}
+
+/* §5 的坑：.field input 的 width:100% 没排除 checkbox，会把勾选框撑成整行。 */
+.enh-model-option input[type='checkbox'] {
+  flex: none;
+  width: auto !important;
+  margin: 0;
+}
+
 .enh-api-empty {
   padding: 18px;
   text-align: center;
@@ -168,16 +328,16 @@ body.enh-sorting {
   font-size: 13px;
 }
 
-.enh-model-matches {
-  line-height: 1.5;
-}
-
 .enh-toast {
   position: fixed;
   left: 50%;
   bottom: 80px;
   z-index: 10020;
   transform: translate(-50%, 12px);
+  /* 上游的报错原文可能很长（一整段 503 报文），不封顶的话 toast 会横着长到
+     屏幕外，两头都看不见。跟 .enh-waiting 用同一套宽度约束。 */
+  max-width: min(520px, 88vw);
+  overflow-wrap: anywhere;
   padding: 9px 15px;
   border-radius: 9px;
   background: rgba(25, 25, 25, 0.92);

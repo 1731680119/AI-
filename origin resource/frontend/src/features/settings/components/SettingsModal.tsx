@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import {
-  Activity, AlertTriangle, Brain, CheckCircle2, ChevronDown, Globe, GripVertical, Image,
+  Activity, AlertTriangle, Brain, CheckCircle2, Globe, Image,
   LayoutTemplate, ListChecks, Loader2, Maximize2, MessageSquare, Minimize2, Paperclip, Palette,
   Plus, RefreshCw, Server, Trash2, X, XCircle,
 } from 'lucide-react'
 import { useStore } from '../../../store'
 import { testSearchProvider } from '../../../services/api'
 import { useUpdateState } from '../../../hooks/useUpdateState'
-import { useSortableList } from '../../../hooks/useSortableList'
 import type {
-  ChatStyle, ImageProvider, PromptTemplate, SearchProvider, SearchTestResult, Settings,
+  ChatStyle, PromptTemplate, SearchProvider, SearchTestResult, Settings,
 } from '../../../types'
 import { DiagnosticsPanel } from '../../diagnostics/components/DiagnosticsPanel'
 import { MemoryPanel } from './MemoryPanel'
@@ -18,25 +17,34 @@ import { ModelPicker } from './ModelPicker'
 import { UpdatePanel } from './UpdatePanel'
 import type { ModelSource } from './ModelPicker'
 
-/** 桌面端「多 API」里的一条上游。密钥加密存在主进程，这里只知道有没有。 */
-interface DesktopApiEntry {
-  id: string
-  name: string
-  baseUrl: string
-  hasKey: boolean
-  enabled: boolean
-}
-
-interface DesktopBridge {
-  getEnhancements: () => Promise<{ apiList?: DesktopApiEntry[] }>
-  revealApiKey: (id: string) => Promise<string>
-}
-
-const desktopBridge = () =>
-  (window as unknown as { chatbotDesktop?: DesktopBridge }).chatbotDesktop
-
 /** 桌面端注入的「多 API」分区只在 Electron 里有意义，浏览器里不显示这一栏。 */
 const isDesktop = () => Boolean((window as unknown as { chatbotDesktop?: unknown }).chatbotDesktop)
+
+/** 关窗询问要用到的两个桥接方法。浏览器里没有 chatbotDesktop，取到的就是 undefined。 */
+interface CloseBridge {
+  setSettingsDirty?: (dirty: boolean) => void
+  onCloseRequested?: (cb: () => void) => () => void
+  resolveClose?: (action: 'proceed' | 'cancel') => void
+}
+const closeBridge = (): CloseBridge =>
+  (window as unknown as { chatbotDesktop?: CloseBridge }).chatbotDesktop || {}
+
+/**
+ * draft 和已保存的 settings 比一次，判断有没有未保存的改动。
+ *
+ * 用 JSON 序列化而不是逐字段比：Settings 有三十多个字段，其中四个还是对象数组
+ * （styles / search_providers / prompt_templates），手写比较函数每加一个设置项
+ * 就得记得改一处，漏了就是「改了却不提示」——正是这个功能要修的毛病。
+ *
+ * 前提是两边的 key 顺序一致。draft 是 `{...settings}` 浅拷出来的，
+ * 数组元素也是 `{...p}`，顺序天然跟着 settings 走，所以成立。
+ * 将来如果谁在 draft 里塞了一个 settings 没有的键，这里会恒判为「有改动」——
+ * 宁可多问一次，也别静默丢改动。
+ */
+function isDirty(draft: Settings | null, saved: Settings | null): boolean {
+  if (!draft || !saved) return false
+  return JSON.stringify(draft) !== JSON.stringify(saved)
+}
 
 type SectionKey =
   | 'chat' | 'api' | 'context' | 'search' | 'memory'
@@ -64,24 +72,19 @@ export function SettingsModal() {
   const saveSettings = useStore((s) => s.saveSettings)
 
   const [draft, setDraft] = useState<Settings | null>(null)
-  const [newModel, setNewModel] = useState('')
   const [saving, setSaving] = useState(false)
   const [section, setSection] = useState<SectionKey>('chat')
   // 正在检测的搜索配置 id，以及每套配置最近一次的检测结果。
   const [testingId, setTestingId] = useState('')
   const [testResults, setTestResults] = useState<Record<string, SearchTestResult>>({})
-  // 当前展开的模型选择器。'chat'/'image' 是那两栏，搜索配置用它自己的 id。
+  // 当前展开的模型选择器。'chat' 是那一栏，搜索配置用它自己的 id。
   const [pickerFor, setPickerFor] = useState('')
-  // 桌面端「多 API」里的上游列表。聊天用的地址和密钥被那一栏接管，
-  // 「聊天」栏里的两个输入框是空的（且被隐藏），所以模型清单得问它要。
-  const [desktopApis, setDesktopApis] = useState<DesktopApiEntry[]>([])
-  // 图片渠道里展开的那几张卡。和桌面端「多 API」一样默认全折叠，
-  // 且不做持久化——每次打开设置都从收起状态开始，长列表才看得过来。
-  const [openImageIds, setOpenImageIds] = useState<string[]>([])
   // 弹窗尺寸：null 表示用 CSS 里的默认大小。最大化和手动尺寸都不记忆，
   // 每次打开都回到默认，这是用户明确要的。
   const [modalSize, setModalSize] = useState<{ w: number; h: number } | null>(null)
   const [maximized, setMaximized] = useState(false)
+  // 未保存改动的确认框。null 表示没弹；'close' 是只关设置，'quit' 是连程序一起退。
+  const [confirmClose, setConfirmClose] = useState<null | 'close' | 'quit'>(null)
   const modalRef = useRef<HTMLDivElement>(null)
   // 「关于与更新」那一栏的红点。面板自己也订阅一份，两处互不影响。
   const { hasUpdate } = useUpdateState()
@@ -95,7 +98,6 @@ export function SettingsModal() {
         styles: settings.styles.map((s) => ({ ...s })),
         prompt_templates: (settings.prompt_templates || []).map((t) => ({ ...t })),
         search_providers: (settings.search_providers || []).map((p) => ({ ...p })),
-        image_providers: (settings.image_providers || []).map((p) => ({ ...p })),
       })
     }
   }, [settingsOpen, settings])
@@ -106,42 +108,31 @@ export function SettingsModal() {
       setSection('chat')
       // 模型选择器里的清单是按当时的地址和密钥拉的，重开时一律收起重来。
       setPickerFor('')
-      setOpenImageIds([])
       setModalSize(null)
       setMaximized(false)
+      setConfirmClose(null)
     }
   }, [settingsOpen])
 
-  // 桌面端的聊天地址与密钥由「多 API」那一栏管理，打开设置时同步一份过来，
-  // 「检测可用模型」才知道该问哪个上游。浏览器里没有这个桥，直接跳过。
-  useEffect(() => {
-    const bridge = desktopBridge()
-    if (!settingsOpen || !bridge) return
-    let alive = true
-    void bridge.getEnhancements()
-      .then((data) => { if (alive) setDesktopApis(data?.apiList || []) })
-      .catch(() => { if (alive) setDesktopApis([]) })
-    return () => { alive = false }
-  }, [settingsOpen])
+  const dirty = settingsOpen && isDirty(draft, settings)
 
-  /**
-   * 图片渠道的拖动排序。顺序即故障转移优先级，所以拖动是有实际意义的操作，
-   * 不只是排版。把手限定在 `.provider-drag-handle`，否则整张卡都是拖动区，
-   * 卡片里的输入框会点不进去。
-   *
-   * 注意这个 hook 必须写在下面那句提前 return 之前——它不能被条件跳过。
-   */
-  const imageSort = useSortableList(
-    draft?.image_providers?.length ?? 0,
-    (from, to) => setDraft((d) => {
-      if (!d) return d
-      const next = [...(d.image_providers || [])]
-      const [moved] = next.splice(from, 1)
-      next.splice(to, 0, moved)
-      return { ...d, image_providers: next }
-    }),
-    { handleSelector: '.provider-drag-handle' },
-  )
+  // 把「有没有未保存的改动」同步给主进程，它据此决定点窗口关闭按钮时要不要先问。
+  // 设置一关就必然报 false（dirty 里带了 settingsOpen 这个条件），
+  // 漏了这一下窗口会永远关不掉。
+  useEffect(() => {
+    closeBridge().setSettingsDirty?.(dirty)
+  }, [dirty])
+
+  // 组件卸载时兜一次。正常路径上上面那个 effect 已经报过 false 了，
+  // 但页面整体被替换掉时不会重跑，这里补上。
+  useEffect(() => () => closeBridge().setSettingsDirty?.(false), [])
+
+  // 主进程拦下窗口关闭按钮后回调这里，弹的是同一个确认框，只是按「保存」
+  // 之后要继续把窗口关掉。
+  useEffect(() => {
+    const off = closeBridge().onCloseRequested?.(() => setConfirmClose('quit'))
+    return off
+  }, [])
 
   if (!settingsOpen || !draft) return null
 
@@ -149,51 +140,12 @@ export function SettingsModal() {
 
   const patch = (p: Partial<Settings>) => setDraft((d) => (d ? { ...d, ...p } : d))
 
-  const addModel = () => {
-    const name = newModel.trim()
-    if (!name || draft.models.includes(name)) return
-    patch({ models: [...draft.models, name] })
-    setNewModel('')
-  }
-
-  /** 从检测出的清单里整体替换模型列表。默认模型不在新列表里时改指第一个。 */
-  const applyPickedModels = (models: string[]) => {
-    if (!models.length) return
-    patch({
-      models,
-      default_model: models.includes(draft.default_model) ? draft.default_model : models[0],
-    })
-  }
-
   /** 展开／收起模型选择器。同一时刻只开一个，免得几份清单同时在拉。 */
   const togglePicker = (key: string) => setPickerFor((cur) => (cur === key ? '' : key))
 
   /** 把当前填的地址和密钥包成一个上游，给搜索配置、图片这种单来源的地方用。 */
   const singleSource = (id: string, name: string, baseUrl: string, apiKey: string): ModelSource[] =>
     (baseUrl.trim() ? [{ id, name, baseUrl, resolveKey: async () => apiKey }] : [])
-
-  /**
-   * 聊天模型能问哪些上游要清单。
-   *
-   * 桌面端装了「多 API」时，聊天的地址和密钥由那一栏接管（「聊天」栏里的两个
-   * 输入框会被隐藏并留空），所以来源取那份列表，密钥点检测时才解密取出；
-   * 没装或列表为空时，退回「聊天」栏自己的地址和密钥。
-   */
-  const chatSources = (): ModelSource[] => {
-    const bridge = desktopBridge()
-    if (bridge) {
-      const usable = desktopApis.filter((api) => api.enabled && api.baseUrl.trim() && api.hasKey)
-      if (usable.length) {
-        return usable.map((api) => ({
-          id: api.id,
-          name: api.name,
-          baseUrl: api.baseUrl,
-          resolveKey: () => bridge.revealApiKey(api.id),
-        }))
-      }
-    }
-    return singleSource('legacy', '聊天设置', draft.base_url, draft.api_key)
-  }
 
   const patchStyle = (id: string, p: Partial<ChatStyle>) =>
     patch({ styles: draft.styles.map((s) => (s.id === id ? { ...s, ...p } : s)) })
@@ -290,32 +242,8 @@ export function SettingsModal() {
       ],
     })
 
-  // ---- 图片生成的多渠道 ----
-
-  const imageProviders = draft.image_providers || []
-
-  const patchImageProvider = (id: string, p: Partial<ImageProvider>) =>
-    patch({ image_providers: imageProviders.map((x) => (x.id === id ? { ...x, ...p } : x)) })
-
-  const addImageProvider = () => {
-    const id = `img-${Date.now().toString(36)}`
-    patch({
-      image_providers: [
-        ...imageProviders,
-        { id, name: '新图片渠道', base_url: '', api_key: '', model: '', enabled: true },
-      ],
-    })
-    // 新加的这张直接展开：刚建出来是空的，折叠着没法填。
-    setOpenImageIds((ids) => [...ids, id])
-  }
-
-  const removeImageProvider = (id: string) => {
-    patch({ image_providers: imageProviders.filter((x) => x.id !== id) })
-    setOpenImageIds((ids) => ids.filter((x) => x !== id))
-  }
-
-  const toggleImageProvider = (id: string) =>
-    setOpenImageIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
+  // 1.2.19 起图片渠道并进了桌面端的「多 API」，这里原来那套增删改的辅助函数
+  // 连同 UI 一起删了。绘画的渠道/模型改在多 API 面板里配，见 docs/07 §4。
 
   // ---- 弹窗尺寸 ----
 
@@ -370,8 +298,47 @@ export function SettingsModal() {
     }
   }
 
+  /**
+   * 想关掉设置弹窗（点 X、点遮罩、点「取消」）。有未保存的改动就先弹确认框，
+   * 没有就直接关——没改过还要问一句是纯添乱。
+   */
+  const requestClose = () => {
+    if (dirty) setConfirmClose('close')
+    else setSettingsOpen(false)
+  }
+
+  /** 确认框的「保存」。quit 那一路存完还要把窗口继续关掉。 */
+  const confirmSave = async () => {
+    const mode = confirmClose
+    setConfirmClose(null)
+    try {
+      await save()
+    } catch {
+      // 存不上就别把窗口关了，否则用户既没存成也没得改。
+      // 具体错误由 saveSettings 走 store 的 error 通道呈现。
+      if (mode === 'quit') closeBridge().resolveClose?.('cancel')
+      return
+    }
+    if (mode === 'quit') closeBridge().resolveClose?.('proceed')
+  }
+
+  /** 确认框的「不保存」：丢掉 draft 直接走。 */
+  const confirmDiscard = () => {
+    const mode = confirmClose
+    setConfirmClose(null)
+    setSettingsOpen(false)
+    if (mode === 'quit') closeBridge().resolveClose?.('proceed')
+  }
+
+  /** 确认框的「取消」：留在设置里接着改。窗口那一路要告诉主进程别关了。 */
+  const confirmCancel = () => {
+    const mode = confirmClose
+    setConfirmClose(null)
+    if (mode === 'quit') closeBridge().resolveClose?.('cancel')
+  }
+
   return (
-    <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && setSettingsOpen(false)}>
+    <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && requestClose()}>
       <div
         className={`modal modal-settings${maximized ? ' modal-maximized' : ''}`}
         ref={modalRef}
@@ -387,7 +354,7 @@ export function SettingsModal() {
             >
               {maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
             </button>
-            <button className="icon-btn" onClick={() => setSettingsOpen(false)}><X size={17} /></button>
+            <button className="icon-btn" onClick={requestClose}><X size={17} /></button>
           </div>
         </div>
 
@@ -431,66 +398,6 @@ export function SettingsModal() {
                   placeholder="sk-…"
                   onChange={(e) => patch({ api_key: e.target.value })}
                 />
-              </div>
-
-              <div className="field">
-                <div className="field-head">
-                  <label>模型列表</label>
-                  <button
-                    className="btn-ghost model-probe-btn"
-                    disabled={!chatSources().length}
-                    title={
-                      chatSources().length
-                        ? '读取上游的模型清单，从里面挑'
-                        : '先填好 API 地址和密钥（桌面端在「多 API」那一栏）'
-                    }
-                    onClick={() => togglePicker('chat')}
-                  >
-                    <ListChecks size={13} /> {pickerFor === 'chat' ? '收起' : '检测可用模型'}
-                  </button>
-                </div>
-                {pickerFor === 'chat' && (
-                  <ModelPicker
-                    sources={chatSources()}
-                    selected={draft.models}
-                    multi
-                    allowTest
-                    onConfirm={applyPickedModels}
-                    onClose={() => setPickerFor('')}
-                  />
-                )}
-                <div className="model-list-edit">
-                  {draft.models.map((m) => (
-                    <div className="model-row" key={m}>
-                      <label className="radio">
-                        <input
-                          type="radio"
-                          name="default-model"
-                          checked={draft.default_model === m}
-                          onChange={() => patch({ default_model: m })}
-                        />
-                        <span>{m}</span>
-                      </label>
-                      <button
-                        className="icon-btn"
-                        disabled={draft.models.length <= 1}
-                        onClick={() => patch({ models: draft.models.filter((x) => x !== m) })}
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </div>
-                  ))}
-                  <div className="model-add">
-                    <input
-                      value={newModel}
-                      placeholder="添加模型名称，如 claude-sonnet-4-5"
-                      onChange={(e) => setNewModel(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && addModel()}
-                    />
-                    <button className="btn-ghost" onClick={addModel}><Plus size={14} /> 添加</button>
-                  </div>
-                </div>
-                <div className="hint">选中的单选按钮为默认模型</div>
               </div>
 
               <div className="field">
@@ -981,143 +888,21 @@ export function SettingsModal() {
               <h3 className="settings-section-title">图片生成</h3>
 
               <div className="field">
-                <label>图片渠道</label>
-                <div className="provider-list" ref={imageSort.containerRef}>
-                  {imageProviders.map((p, i) => {
-                    const sortProps = imageSort.itemProps(i)
-                    const open = openImageIds.includes(p.id)
-                    return (
-                      <div
-                        key={p.id}
-                        {...sortProps}
-                        className={`provider-card ${sortProps.className}${open ? ' open' : ''}`}
-                      >
-                        <div className="provider-head">
-                          <span className="provider-drag-handle" title="拖动调整顺序">
-                            <GripVertical size={14} />
-                          </span>
-                          <input
-                            className="style-name"
-                            value={p.name}
-                            placeholder="渠道名称，例如 某某中转站"
-                            onChange={(e) => patchImageProvider(p.id, { name: e.target.value })}
-                          />
-                          <label className="provider-enabled" title="停用后跳过这个渠道">
-                            <input
-                              type="checkbox"
-                              checked={p.enabled !== false}
-                              onChange={(e) => patchImageProvider(p.id, { enabled: e.target.checked })}
-                            />
-                            <span>启用</span>
-                          </label>
-                          <button
-                            className="icon-btn"
-                            title="删除这个渠道"
-                            onClick={() => removeImageProvider(p.id)}
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                          <button
-                            className={`icon-btn provider-toggle${open ? ' open' : ''}`}
-                            title={open ? '收起' : '展开'}
-                            onClick={() => toggleImageProvider(p.id)}
-                          >
-                            <ChevronDown size={15} />
-                          </button>
-                        </div>
-
-                        {open && (
-                          <div className="provider-body">
-                            <div className="field-row">
-                              <div className="field">
-                                <label>API 地址（Base URL）</label>
-                                <input
-                                  value={p.base_url}
-                                  placeholder="https://api.example.com/v1"
-                                  onChange={(e) => patchImageProvider(p.id, { base_url: e.target.value })}
-                                />
-                              </div>
-                              <div className="field">
-                                <label>API 密钥</label>
-                                <input
-                                  type="password"
-                                  value={p.api_key}
-                                  placeholder="sk-…"
-                                  onChange={(e) => patchImageProvider(p.id, { api_key: e.target.value })}
-                                />
-                              </div>
-                            </div>
-
-                            <div className="field">
-                              <div className="field-head">
-                                <label>图片模型</label>
-                                <button
-                                  className="btn-ghost model-probe-btn"
-                                  disabled={!p.base_url.trim() || !p.api_key.trim()}
-                                  title={p.api_key.trim() ? '读取这个上游的模型清单' : '先填地址和密钥'}
-                                  onClick={() => togglePicker(p.id)}
-                                >
-                                  <ListChecks size={13} /> {pickerFor === p.id ? '收起' : '检测可用模型'}
-                                </button>
-                              </div>
-                              <input
-                                value={p.model}
-                                placeholder="gpt-image-2"
-                                onChange={(e) => patchImageProvider(p.id, { model: e.target.value })}
-                              />
-                              {pickerFor === p.id && (
-                                <ModelPicker
-                                  sources={singleSource(p.id, p.name, p.base_url, p.api_key)}
-                                  selected={[p.model]}
-                                  onConfirm={(models) => patchImageProvider(p.id, { model: models[0] })}
-                                  onClose={() => setPickerFor('')}
-                                />
-                              )}
-                              <div className="hint">
-                                清单是上游的完整模型列表，画图模型通常带 image / dall / flux / seedream 等字样。
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                  {imageProviders.length === 0 && (
-                    <div className="provider-empty">还没有图片渠道，添加一个才能生成图片</div>
-                  )}
-                  <button className="btn-ghost" onClick={addImageProvider}>
-                    <Plus size={14} /> 添加图片渠道
-                  </button>
-                </div>
+                <label>图片尺寸</label>
+                <input
+                  value={draft.image_size}
+                  placeholder="1920x1080"
+                  onChange={(e) => patch({ image_size: e.target.value })}
+                />
                 <div className="hint">
-                  和「多 API」一样按从上到下的顺序使用：排在前面的渠道失败了才换下一个，
-                  拖动六个小点可以调整优先级。渠道里的模型留空时，沿用第一个可用渠道的模型名。
+                  文生图的输出尺寸；图片编辑默认「跟随原图」，要固定尺寸得在图片页单独选。
                 </div>
               </div>
-
-              <div className="field-row">
-                <div className="field">
-                  <label>图片尺寸</label>
-                  <input
-                    value={draft.image_size}
-                    placeholder="1920x1080"
-                    onChange={(e) => patch({ image_size: e.target.value })}
-                  />
-                </div>
-                <div className="field">
-                  <label>图片质量</label>
-                  <select
-                    value={draft.image_quality}
-                    onChange={(e) => patch({ image_quality: e.target.value })}
-                  >
-                    <option value="low">low</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high</option>
-                    <option value="auto">auto</option>
-                  </select>
-                </div>
+              <div className="hint">
+                1.2.19 起图片渠道并进了「多 API」：在那里添加渠道、获取模型清单，
+                把绘画模型的用途标成「图片」，它就会出现在图片页的模型选择器里。
+                用哪家渠道、哪个模型都在图片页当场选，不在这里配。
               </div>
-              <div className="hint">尺寸和质量是所有渠道共用的，不随渠道切换。</div>
             </section>
 
             <section className="settings-pane" hidden={section !== 'diagnostics'}>
@@ -1133,7 +918,7 @@ export function SettingsModal() {
         </div>
 
         <div className="modal-footer">
-          <button className="btn-ghost" onClick={() => setSettingsOpen(false)}>取消</button>
+          <button className="btn-ghost" onClick={requestClose}>取消</button>
           <button className="btn-primary" disabled={saving} onClick={save}>
             {saving ? '保存中…' : '保存'}
           </button>
@@ -1148,6 +933,26 @@ export function SettingsModal() {
           </>
         )}
       </div>
+
+      {/* 未保存改动的确认框。套在设置弹窗的遮罩里，不再叠一层遮罩——
+          两层半透明黑叠起来会明显变暗，像是出了什么错。 */}
+      {confirmClose && (
+        <div className="confirm-dirty" role="dialog" aria-modal="true">
+          <h3>设置还没保存</h3>
+          <p>
+            {confirmClose === 'quit'
+              ? '有改动没有保存。要先保存再关闭软件吗？'
+              : '有改动没有保存。关掉这个窗口就会丢失。'}
+          </p>
+          <div className="confirm-dirty-actions">
+            <button className="btn-ghost" onClick={confirmCancel}>取消</button>
+            <button className="btn-ghost" onClick={confirmDiscard}>不保存</button>
+            <button className="btn-primary" disabled={saving} onClick={confirmSave}>
+              {saving ? '保存中…' : '保存'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

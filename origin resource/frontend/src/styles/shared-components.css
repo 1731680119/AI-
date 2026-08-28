@@ -153,6 +153,42 @@
 .model-menu { right: 0; left: auto; }
 
 /*
+ * 输入框里按渠道分组的模型菜单（Composer 的桌面端分支）。
+ *
+ * 只作用于 .model-menu-grouped 这个额外的 class，不动 .model-item——那一条被
+ * 模板、思考档位、风格、记忆四个菜单共用。也不动 .model-menu 本身的
+ * bottom: calc(100% + 6px)（在 chat.css 里），输入框贴着窗口底部，向上弹是对的。
+ *
+ * 限高是必需的：4 家渠道各带十几个模型时，不限高的菜单会直接超出窗口顶部，
+ * 而它是向上弹的，超出的部分连滚都滚不到。
+ */
+.model-menu-grouped {
+  max-height: 320px;
+  overflow-y: auto;
+}
+.model-group + .model-group {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+}
+.model-group-title {
+  padding: 4px 10px 2px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  /* 分组名只是标签，别让它看起来像可点的一项。 */
+  cursor: default;
+}
+/* 按钮上的渠道名：给模型名让位，所以比它小一号也淡一些。 */
+.model-btn-channel {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  max-width: 88px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
  * 拖动排序（useSortableList）。三种状态：
  *
  *   .sortable-ghost       跟随指针的克隆，缩小 + 半透明，挂在 body 下

@@ -8,6 +8,12 @@ export interface GenerateImageRequest {
   size?: string
   quality?: string
   n?: number
+  /**
+   * 用户选中的多 API 渠道 id。后端不读它——桌面层拦下这个请求，按它把渠道的
+   * 地址和密钥临时写进后端设置再放行（和聊天的 api_id 同一套）。
+   * 浏览器里没有桌面桥，带不带都一样。
+   */
+  api_id?: string
 }
 
 export function listImages(): Promise<ImageRecord[]> {
@@ -46,6 +52,7 @@ export function editImage(
   if (body.model) form.append('model', body.model)
   if (body.size) form.append('size', body.size)
   if (body.quality) form.append('quality', body.quality)
+  if (body.api_id) form.append('api_id', body.api_id)
   return requestJson('/images/edit', { method: 'POST', body: form })
 }
 

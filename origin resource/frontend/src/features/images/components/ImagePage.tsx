@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Sparkles, Wand2, Upload, X, Download, FileOutput, Loader2, ImagePlus } from 'lucide-react'
+import {
+  Sparkles, Wand2, Upload, X, Download, FileOutput, Loader2, ImagePlus, ChevronDown, Check,
+} from 'lucide-react'
 import { useStore } from '../../../store'
 import { imageFileUrl } from '../../../services/api'
 import { useFileDrop } from '../../../hooks/useFileDrop'
+import { useDesktopChannels, groupByChannel } from '../../../hooks/useDesktopChannels'
 import { ExportDialog } from './ExportDialog'
 
 /** 参考图上限，与后端 MAX_REFERENCE_IMAGES 保持一致。 */
@@ -28,6 +31,9 @@ export function ImagePage() {
   const imageFormNonce = useStore((s) => s.imageFormNonce)
   const generateImages = useStore((s) => s.generateImages)
   const editImage = useStore((s) => s.editImage)
+  const saveSettings = useStore((s) => s.saveSettings)
+  const imageApiId = useStore((s) => s.imageApiId)
+  const setImageApiId = useStore((s) => s.setImageApiId)
 
   const [tab, setTab] = useState<'generate' | 'edit'>('generate')
   const [prompt, setPrompt] = useState('')
@@ -41,8 +47,10 @@ export function ImagePage() {
   const [editSize, setEditSize] = useState('')
   // 正在导出的图片文件名，null 表示没开导出对话框。
   const [exporting, setExporting] = useState<string | null>(null)
+  const [modelMenu, setModelMenu] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const refInput = useRef<HTMLInputElement>(null)
+  const modelMenuRef = useRef<HTMLDivElement>(null)
 
   const selected = useMemo(
     () => images.find((r) => r.id === selectedImageId) ?? null,
@@ -79,6 +87,39 @@ export function ImagePage() {
   // 切走时别把 blob URL 留在内存里。
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => () => revokePreviews(), [])
+
+  // 桌面端按渠道分组列绘画模型：只列渠道模型清单里标成 image 用途的那些。
+  // 和输入框那个选择器是同一套（见 Composer），区别只有 capability 和
+  // 写回的字段（image_model / imageApiId）。
+  const { supported: channelsSupported, channels, refresh: refreshChannels } = useDesktopChannels()
+  const imageGroups = groupByChannel(channels, 'image')
+  const imageModel = settings?.image_model || ''
+  const activeChannelName = imageGroups.find((g) => g.id === imageApiId)?.name || ''
+
+  // 点击外部关闭模型菜单。
+  useEffect(() => {
+    if (!modelMenu) return
+    const onClick = (e: MouseEvent) => {
+      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
+        setModelMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [modelMenu])
+
+  const openModelMenu = () => {
+    // 每次打开都重新拉：渠道的模型清单可能刚在设置页里被获取或增删过。
+    if (!modelMenu) void refreshChannels()
+    setModelMenu((v) => !v)
+  }
+
+  /** 选定「某家渠道的某个绘画模型」：模型名进设置（跨重启），渠道 id 只记本次运行。 */
+  const pickModel = (name: string, apiId: string) => {
+    if (settings && name !== imageModel) void saveSettings({ ...settings, image_model: name })
+    setImageApiId(apiId)
+    setModelMenu(false)
+  }
 
   const pickFile = (f: File | null) => {
     if (srcPreview) URL.revokeObjectURL(srcPreview)
@@ -373,8 +414,52 @@ export function ImagePage() {
               </select>
             </label>
           )}
+
+          {/* 模型选择器。文生图和图片编辑共用一个——两边打的是同一个渠道的
+              同一个模型，分开选只会让人以为它们能配不一样。 */}
+          <div className="model-select image-model-select" ref={modelMenuRef}>
+            <button
+              className="model-btn"
+              title={activeChannelName ? `${activeChannelName} · ${imageModel}` : imageModel}
+              onClick={openModelMenu}
+            >
+              {activeChannelName && <span className="model-btn-channel">{activeChannelName}</span>}
+              {imageModel || '选择绘画模型'}
+              <ChevronDown size={14} />
+            </button>
+            {modelMenu && (
+              <div className="model-menu model-menu-grouped">
+                {imageGroups.length > 0 ? imageGroups.map((group) => (
+                  <div className="model-group" key={group.id}>
+                    <div className="model-group-title">{group.name}</div>
+                    {group.models.map((m) => {
+                      // 同名模型可能出现在多家渠道下，所以要连渠道一起比。
+                      const active = m === imageModel && group.id === imageApiId
+                      return (
+                        <div
+                          key={`${group.id}::${m}`}
+                          className={`model-item ${active ? 'active' : ''}`}
+                          title={`${group.name} · ${m}`}
+                          onClick={() => pickModel(m, group.id)}
+                        >
+                          <span>{m}</span>
+                          {active && <Check size={14} />}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )) : (
+                  <div className="model-menu-empty">
+                    {channelsSupported
+                      ? '还没有可用的绘画模型。去设置的「多 API」里获取模型清单，把绘画模型的用途标成「图片」。'
+                      : '绘画模型选择只在桌面端可用。'}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           <span className="image-settings-hint">
-            {settings?.image_model} ·{' '}
             {tab === 'edit' ? (editSize || '跟随原图') : settings?.image_size} ·{' '}
             {settings?.image_quality}
           </span>
