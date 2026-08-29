@@ -1,6 +1,5 @@
 """SSE 流式聊天接口。"""
 import json
-import threading
 from collections.abc import Iterator
 
 from fastapi import APIRouter, HTTPException
@@ -29,11 +28,27 @@ class ChatBody(BaseModel):
     continue_from: str | None = None
     # 本次请求的思考档位；不传就用设置里的默认档位。
     thinking: str | None = None
+    # 选中的 API 渠道 id。后端自己用不上它（渠道地址、密钥由桌面层临时写进
+    # 全局设置），但桌面层的 fetch 补丁要从请求体里读它才知道该调哪一家，
+    # 所以这里必须声明——不然它只是个被 pydantic 悄悄丢掉的多余字段，
+    # 将来给 ChatBody 加上 extra="forbid" 时会直接 422。
+    api_id: str | None = None
 
 
 def sse(data: dict) -> str:
     """把一个 Python 字典编码为浏览器可识别的 SSE 事件。"""
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def first_message_title(content: str) -> str:
+    """用首条消息就地拼出会话标题。
+
+    刻意不调模型：那一步要多花一次请求，失败还得降级，而降级出来的结果
+    和这里是一样的。换行、连续空白先压成单个空格，否则多行提问会在侧边栏
+    里撑出奇怪的空档。
+    """
+    text = " ".join(content.split())
+    return text[:20] + ("..." if len(text) > 20 else "")
 
 
 def _build_message_path(conversation_id: str, end_message_id: str) -> list[dict]:
@@ -219,24 +234,17 @@ def chat(body: ChatBody):
                     persist()
                     last_flush = produced
 
-            # 只有正常跑完（没被中断）才走到这里：落库并生成标题。
+            # 只有正常跑完（没被中断）才走到这里：落库并补上会话标题。
             persist()
             persisted = True
 
             if is_first_message and body.content:
-                # 标题生成失败不应阻塞回答，因此放到独立线程并设置最长等待时间。
-                title_thread = threading.Thread(
-                    target=lambda: db.rename_conversation(
-                        conversation_id,
-                        llm.generate_title(settings, model, body.content),
-                    ),
-                    daemon=True,
-                )
-                title_thread.start()
-                title_thread.join(timeout=15)
-                conversations = {item["id"]: item for item in db.list_conversations()}
-                title = conversations.get(conversation_id, {}).get("title")
-                yield sse({"type": "title", "title": title})
+                # 标题就地截首句，不再调模型生成：那一步要多花一次请求，
+                # 还会让首条回答之后干等最长 15 秒。
+                title = first_message_title(body.content)
+                if title:
+                    db.rename_conversation(conversation_id, title)
+                    yield sse({"type": "title", "title": title})
         finally:
             # 被中断时上面的 persist() 没机会执行，这里兜底保存已生成的部分。
             # persist 本身出错不能再往外抛，否则会掩盖真正的 GeneratorExit。

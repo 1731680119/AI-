@@ -65,6 +65,14 @@ _REASONING_FAMILY = re.compile(r"^(?:gpt-?5|o[1-9](?:-|$))")
 _HINT_REPLACEMENT = re.compile(
     r"use\s+['\"`]?([A-Za-z_][A-Za-z0-9_]*)['\"`]?\s+instead", re.I
 )
+#: 「set reasoning_effort to 'none'」这类赋值提示。有的上游不发这个参数时
+#: 默认照样开推理，光去掉没用，必须按它点名的值显式发过去（ai-wave 的
+#: gpt-5.6 就是这样，见 08 §1.2.21 ⑦）。所以这条要在「去掉」之前先试。
+_HINT_SET_VALUE = re.compile(
+    r"set(?:ting)?\s+['\"`]?([A-Za-z_][A-Za-z0-9_]*)['\"`]?\s+to\s+"
+    r"['\"`]?([A-Za-z0-9_.-]+)['\"`]?",
+    re.I,
+)
 #: 上游没给结构化 param 字段时，从话里把参数名抠出来。
 _HINT_PARAM = re.compile(
     r"(?:unsupported|unrecognized|unknown|invalid|not\s+supported)"
@@ -137,6 +145,7 @@ def merge_fix(base: dict, extra: dict) -> dict:
     out = {
         "rename": {**(base.get("rename") or {}), **(extra.get("rename") or {})},
         "drop": sorted(set(base.get("drop") or []) | set(extra.get("drop") or [])),
+        "set": {**(base.get("set") or {}), **(extra.get("set") or {})},
         "drop_unless_default": {
             **(base.get("drop_unless_default") or {}),
             **(extra.get("drop_unless_default") or {}),
@@ -206,6 +215,9 @@ def apply_fix(kwargs: dict, fix: dict) -> dict:
                 out[new] = value
     for name in fix.get("drop") or []:
         out.pop(name, None)
+    for name, value in (fix.get("set") or {}).items():
+        if name in out:
+            out[name] = value
     for name, default in (fix.get("drop_unless_default") or {}).items():
         if name not in out:
             continue
@@ -234,7 +246,20 @@ def prepare(base_url: str, model: str, kwargs: dict) -> dict:
 
 
 def _error_parts(error: Exception) -> tuple[int, str, str | None]:
-    """从异常里取出 (状态码, 提示原文, 上游标注的参数名)。"""
+    """从异常里取出 (状态码, 提示原文, 上游标注的参数名)。
+
+    `error.body` 有两种形状，**必须都认**：
+
+    - `{"error": {"message": ..., "param": ...}}`：原始响应体的样子；
+    - `{"message": ..., "param": ...}`：openai SDK 会**先拆掉外面那层 `error`**
+      再塞进异常里，实际拿到的多半是这一种。
+
+    只认前一种的话 `param` 永远取不到，整个 400 自愈层就等于没有——
+    从来不重试，直接把上游的原话抛给用户。（gpt-5.6-luna 那条
+    「Function tools with reasoning_effort are not supported」就是这么漏掉的，
+    见 08 §1.2.21 ⑦。）回退的正则也救不了：它要求参数名的引号出现在
+    「not supported」后 60 个字符内，那条消息隔了一百多个字符。
+    """
     text = str(error)
     status = getattr(error, "status_code", None) or getattr(error, "status", None)
     if not isinstance(status, int) or not status:
@@ -244,7 +269,11 @@ def _error_parts(error: Exception) -> tuple[int, str, str | None]:
     message = text
     param: str | None = None
     body = getattr(error, "body", None)
-    detail = body.get("error") if isinstance(body, dict) else None
+    detail = None
+    if isinstance(body, dict):
+        inner = body.get("error")
+        # 拆过一层的那种自己就是 detail；两种形状都落在这一句里。
+        detail = inner if isinstance(inner, dict) else body
     if isinstance(detail, dict):
         message = str(detail.get("message") or text)
         raw_param = detail.get("param")
@@ -265,6 +294,16 @@ def diagnose(error: Exception, kwargs: dict) -> dict:
     if not param or param not in kwargs:
         return {}
 
+    # 先看有没有「set xxx to 'yyy'」：有的上游不发这个参数时默认照样开推理，
+    # 光去掉没用（重试还是同一个 400），必须按它点名的值显式发过去。
+    # 只对 _DROPPABLE 里的参数生效：model 之类的骨架参数被上游「建议改值」
+    # 时照样如实报错，静默换模型比报错糟糕得多。
+    assign = _HINT_SET_VALUE.search(message)
+    if assign and assign.group(1) == param and param in _DROPPABLE:
+        value = assign.group(2)
+        if str(kwargs.get(param)) != value:
+            return {"set": {param: value}}
+
     hint = _HINT_REPLACEMENT.search(message)
     replacement = hint.group(1) if hint else None
     if replacement and replacement != param and replacement not in kwargs:
@@ -279,6 +318,7 @@ def diagnose(error: Exception, kwargs: dict) -> dict:
 def _describe(fix: dict) -> str:
     parts = [f"{old} → {new}" for old, new in (fix.get("rename") or {}).items()]
     parts += [f"去掉 {name}" for name in fix.get("drop") or []]
+    parts += [f"{name} 设为 {value}" for name, value in (fix.get("set") or {}).items()]
     parts += [
         f"非默认值时去掉 {name}" for name in fix.get("drop_unless_default") or {}
     ]

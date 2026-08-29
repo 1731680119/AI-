@@ -398,7 +398,10 @@ body.enh-sorting {
 .enh-tabbar {
   position: fixed;
   inset: 0 0 auto 0;
-  z-index: 10010;
+  /* 必须压过 .enh-failure-overlay 的 10030：从报错弹层里选中文字发起「询问」时，
+     弹层还开着——DeepSeek 视图（原生层，永远在 DOM 之上）盖住了弹层的按钮，
+     标签栏再被弹层罩住的话就两头都点不了，只能杀进程。见 08 §1.2.21 ⑧。 */
+  z-index: 10035;
   height: 42px;
   display: flex;
   align-items: end;

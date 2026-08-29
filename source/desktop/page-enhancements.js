@@ -958,6 +958,33 @@
       prompts: { ...data.prompts },
     }
 
+    // 「显示」按钮会把已存的 Key 回填进输入框，那不是用户的改动。这里记下
+    // 回填值，比对时归一成空串，免得点一下「显示」就被判成「有未保存的改动」。
+    const revealedKeys = new Map()
+    const snapshot = () => JSON.stringify({
+      ...draft,
+      apiList: draft.apiList.map((api) => ({
+        ...api,
+        apiKey: api.apiKey === (revealedKeys.get(api.id) || '') ? '' : api.apiKey,
+      })),
+    })
+    let baseline = snapshot()
+    let dirty = false
+
+    /**
+     * 重新比对一次草稿，状态变了就派事件通知设置弹窗。
+     *
+     * 这一栏是原生 DOM 注入的，改动落在上面那个闭包里的 draft，React 的
+     * settings 从头到尾不变——所以设置弹窗自己的 isDirty() 永远看不到它，
+     * 用户改完多 API 直接关窗会被静默丢弃。这条通道就是补这个洞的。
+     */
+    function syncDirty() {
+      const next = snapshot() !== baseline
+      if (next === dirty) return
+      dirty = next
+      window.dispatchEvent(new CustomEvent('chatbot-settings-extras-dirty', { detail: dirty }))
+    }
+
     const host = settingsHost(body)
     if (!host) return
     // 单 API 的旧输入框由多 API 列表接管，隐藏掉以免两处冲突。
@@ -1013,6 +1040,9 @@
       renderApiList()
       // 卡片收起后总高度可能变矮，浏览器会自己夹到新的最大值，这里不用再判断。
       if (scroller) scroller.scrollTop = top
+      // 添加、删除、拖动排序都走这里，而它们不产生 input/change 事件，
+      // 光靠 section 上那几个监听会漏掉。
+      syncDirty()
     }
 
     function renderApiList() {
@@ -1105,10 +1135,13 @@
             } finally {
               hideWaiting('api-key-reveal')
             }
+            // 回填的是已存的值，登记下来，别把它算成用户的改动。
+            revealedKeys.set(api.id, key.value)
           }
           api.apiKey = key.value
           key.type = 'text'
           reveal.textContent = '隐藏'
+          syncDirty()
         })
         keyControls.append(key, reveal)
         keyRow.append(keyLabel, keyControls)
@@ -1183,26 +1216,31 @@
     if (host.slot) host.slot.replaceChildren(section)
     else host.heading.insertAdjacentElement('afterend', section)
 
-    const saveButton = [...document.querySelectorAll('.modal-footer .btn-primary')]
-      .find((button) => button.textContent.includes('保存'))
-    if (saveButton && !saveButton.dataset.enhancedSave) {
-      saveButton.dataset.enhancedSave = 'true'
-      const enhancedSaveHandler = async (event) => {
-        event.preventDefault()
-        event.stopImmediatePropagation()
+    // 旧写法是在这里劫持底部「保存」按钮的 click。那样只有点按钮那一条路
+    // 存得上多 API：未保存确认框里的「保存」走的是设置弹窗自己的 save()，
+    // 绕过按钮，改动照样丢。改成把保存动作交出去，由 save() 统一调。
+
+    // 改动状态和保存动作都挂到这个全局上，供设置弹窗读取。contextBridge
+    // 暴露的 chatbotDesktop 是冻结的，加不了字段，所以另开一个。
+    window.chatbotSettingsExtras = {
+      isDirty: () => section.isConnected && dirty,
+      save: async () => {
+        if (!section.isConnected) return
         showWaiting('enhancement-settings-save', '正在保存 API 设置，请稍候…')
         try {
           await desktop.saveEnhancements(draft)
-          saveButton.removeEventListener('click', enhancedSaveHandler, true)
-          saveButton.click()
-        } catch (error) {
-          alert(`保存多 API 设置失败：${error.message}`)
+          baseline = snapshot()
+          syncDirty()
         } finally {
           hideWaiting('enhancement-settings-save')
         }
-      }
-      saveButton.addEventListener('click', enhancedSaveHandler, true)
+      },
     }
+    // 名称、地址、超时这些走 input；启用勾选和能力下拉走 change；模型清单的
+    // 增删是按钮，只能靠 click 兜住（冒泡到这里时目标的处理器已经改完 draft）。
+    for (const type of ['input', 'change', 'click']) section.addEventListener(type, syncDirty)
+    // 每次重开设置都会重跑 injectSettings，先把上一轮的残留状态清零。
+    window.dispatchEvent(new CustomEvent('chatbot-settings-extras-dirty', { detail: false }))
   }
 
   const settingsObserver = new MutationObserver(() => {

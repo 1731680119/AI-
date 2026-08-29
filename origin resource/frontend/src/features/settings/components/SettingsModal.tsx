@@ -30,6 +30,20 @@ const closeBridge = (): CloseBridge =>
   (window as unknown as { chatbotDesktop?: CloseBridge }).chatbotDesktop || {}
 
 /**
+ * 桌面端注入的「多 API」栏（`desktop/page-enhancements.js`）自己维护一份原生
+ * DOM 的草稿，React 完全看不见——所以下面的 isDirty() 判不出它有没有改动，
+ * 保存也得由它自己来。它通过这个全局对象把两件事交回来。浏览器里没有。
+ */
+interface SettingsExtras {
+  isDirty?: () => boolean
+  save?: () => Promise<void>
+}
+const settingsExtras = (): SettingsExtras =>
+  (window as unknown as { chatbotSettingsExtras?: SettingsExtras }).chatbotSettingsExtras || {}
+/** 注入层在改动状态翻转时派的事件，detail 就是新的 dirty。 */
+const EXTRAS_DIRTY_EVENT = 'chatbot-settings-extras-dirty'
+
+/**
  * draft 和已保存的 settings 比一次，判断有没有未保存的改动。
  *
  * 用 JSON 序列化而不是逐字段比：Settings 有三十多个字段，其中四个还是对象数组
@@ -85,6 +99,8 @@ export function SettingsModal() {
   const [maximized, setMaximized] = useState(false)
   // 未保存改动的确认框。null 表示没弹；'close' 是只关设置，'quit' 是连程序一起退。
   const [confirmClose, setConfirmClose] = useState<null | 'close' | 'quit'>(null)
+  // 「多 API」栏有没有未保存的改动。它不在 draft 里，只能等注入层派事件过来。
+  const [extrasDirty, setExtrasDirty] = useState(false)
   const modalRef = useRef<HTMLDivElement>(null)
   // 「关于与更新」那一栏的红点。面板自己也订阅一份，两处互不影响。
   const { hasUpdate } = useUpdateState()
@@ -111,10 +127,22 @@ export function SettingsModal() {
       setModalSize(null)
       setMaximized(false)
       setConfirmClose(null)
+      setExtrasDirty(false)
     }
   }, [settingsOpen])
 
-  const dirty = settingsOpen && isDirty(draft, settings)
+  // 注入层是异步装配的（要先去主进程读一次 API 配置），装好才会派事件，
+  // 所以监听挂在组件上而不是跟着 settingsOpen 走，免得错过第一次通知。
+  useEffect(() => {
+    const onExtras = (event: Event) =>
+      setExtrasDirty(Boolean((event as CustomEvent<boolean>).detail))
+    window.addEventListener(EXTRAS_DIRTY_EVENT, onExtras)
+    return () => window.removeEventListener(EXTRAS_DIRTY_EVENT, onExtras)
+  }, [])
+
+  // 关窗前问不问，取决于两份草稿里任意一份有改动。前面那个 settingsOpen
+  // 不能去掉：设置一关就必须报 false，否则主进程会认为窗口永远不能关。
+  const dirty = settingsOpen && (isDirty(draft, settings) || extrasDirty)
 
   // 把「有没有未保存的改动」同步给主进程，它据此决定点窗口关闭按钮时要不要先问。
   // 设置一关就必然报 false（dirty 里带了 settingsOpen 这个条件），
@@ -286,6 +314,14 @@ export function SettingsModal() {
   const save = async () => {
     setSaving(true)
     try {
+      // 多 API 那一栏由桌面注入层自己存，先存它再存普通设置——顺序和以前
+      // 劫持保存按钮时一致。它失败就整体不往下走，窗口也不关。
+      try {
+        await settingsExtras().save?.()
+      } catch (error) {
+        window.alert(`保存多 API 设置失败：${(error as Error).message}`)
+        throw error
+      }
       // 确保 default_model 在列表中
       const d = { ...draft }
       if (!d.models.includes(d.default_model) && d.models.length) {
@@ -919,7 +955,7 @@ export function SettingsModal() {
 
         <div className="modal-footer">
           <button className="btn-ghost" onClick={requestClose}>取消</button>
-          <button className="btn-primary" disabled={saving} onClick={save}>
+          <button className="btn-primary" disabled={saving} onClick={() => { void save().catch(() => {}) }}>
             {saving ? '保存中…' : '保存'}
           </button>
         </div>
