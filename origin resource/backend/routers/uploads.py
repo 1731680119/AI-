@@ -1,4 +1,6 @@
 """聊天附件上传接口。"""
+import asyncio
+
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 import database as db
@@ -25,5 +27,10 @@ async def upload(file: UploadFile = File(...)):
     data = await file.read()
     if len(data) > single_max_mb * 1024 * 1024:
         raise HTTPException(413, f"文件超过 {single_max_mb}MB 限制，可在设置中调整")
-    return file_service.save_upload(file.filename or "未命名文件", data)
+    # save_upload 内联做 PDF/docx/xlsx/pptx 解析，大文件能跑好几秒，是同步阻塞的。
+    # 本处理函数是 async def，直接调会占死事件循环，那段时间所有请求都派发不出去
+    #（和 routers/images.py 的 /edit 是同一个坑，表现是传大附件时界面整体卡住）。
+    return await asyncio.to_thread(
+        file_service.save_upload, file.filename or "未命名文件", data,
+    )
 

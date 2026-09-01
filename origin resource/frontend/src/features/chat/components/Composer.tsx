@@ -7,7 +7,7 @@ import { useStore } from '../../../store'
 import { uploadFile } from '../../../services/api'
 import { useFileDrop } from '../../../hooks/useFileDrop'
 import { useSortableList } from '../../../hooks/useSortableList'
-import { useDesktopChannels, groupByChannel } from '../../../hooks/useDesktopChannels'
+import { useDesktopChannels, groupByChannel, resolveChannelName } from '../../../hooks/useDesktopChannels'
 import type { Attachment } from '../../../types'
 
 const THINKING_OPTIONS = ['auto', 'minimal', 'low', 'medium', 'high'] as const
@@ -195,7 +195,9 @@ export function Composer() {
   const { supported: channelsSupported, channels, refresh: refreshChannels } = useDesktopChannels()
   const chatGroups = groupByChannel(channels, 'chat')
   const grouped = channelsSupported && chatGroups.length > 0
-  const activeChannelName = chatGroups.find((g) => g.id === chatApiId)?.name || ''
+  // 刚进软件时 chatApiId 还是 null，但请求照样发得出去（主进程会兜底挑一家）。
+  // 所以这里按同一套优先级把那家算出来显示，别让渠道名空着。
+  const activeChannelName = resolveChannelName(chatGroups, chatApiId, model)
 
   const openModelMenu = () => {
     // 每次打开都重新拉：渠道的模型清单可能刚在设置页里被获取或增删过。

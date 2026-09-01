@@ -1,4 +1,5 @@
 """图片生成、编辑、历史记录和文件读取接口。"""
+import asyncio
 import json
 import os
 from urllib.parse import quote
@@ -40,20 +41,27 @@ class GenerateBody(BaseModel):
     size: str | None = None
     quality: str | None = None
     n: int = 1
+    # 用户在图片页选中的多 API 渠道。后端不读它——渠道是桌面层在请求发出前
+    # 临时写进 image_base_url / image_api_key 的。声明出来只是为了让这个字段
+    # 在接口文档里可见，也免得以后有人把它当成脏数据删掉。
+    api_id: str | None = None
 
 
 def _require_image_channel(settings: dict) -> None:
     """没有可用渠道就直接回 400，别让请求走到上游再拿一个看不懂的报错。
 
-    只看 image_api_key 就够了：它由 get_settings 从渠道列表里镜像出来，
-    列表里一个可用的都没有时会被清空。分两句话报错是为了让用户知道
-    是「还没配」还是「配了但全禁用/没填密钥」。
+    1.2.19 起 image_api_key 由桌面层在发请求前临时写进来（用户在图片页的模型
+    选择器里选的那条多 API 渠道）。所以它为空只有两种可能：跑在浏览器里没有
+    桌面桥，或者一条渠道都没标出 image 用途的模型。两种都指向同一件事——
+    去多 API 里配一条能画图的渠道。
     """
     if settings.get("image_api_key"):
         return
-    if settings.get("image_providers"):
-        raise HTTPException(400, "没有可用的图片渠道：请在设置里启用渠道并填写 API Key")
-    raise HTTPException(400, "尚未配置图片生成 API Key")
+    raise HTTPException(
+        400,
+        "没有可用的图片渠道：请在设置的「多 API」里添加渠道，"
+        "并在它的模型清单里把绘画模型的用途标成「图片」。",
+    )
 
 
 @router.get("")
@@ -90,6 +98,9 @@ async def edit_image(
     model: str = Form(""),
     size: str = Form(""),
     quality: str = Form(""),
+    # 同 GenerateBody.api_id：桌面层用，后端不读。不声明的话 FastAPI 会把这个
+    # 多出来的表单字段直接丢掉，虽然不报错，但接口文档里就看不到它了。
+    api_id: str = Form(""),
 ):
     settings = db.get_settings()
     _require_image_channel(settings)
@@ -117,7 +128,14 @@ async def edit_image(
     notes = _parse_reference_notes(reference_notes, len(reference_payload))
 
     try:
-        result = image_service.edit_image_with_references(
+        # 必须扔到线程里跑。这个函数会同步等上游画完图（几十秒到两分钟），而本
+        # 处理函数是 async def——直接调就等于把 uvicorn 的事件循环占死，那段时间
+        # 里**所有**请求都派发不出去，表现是「编辑图片时删不掉聊天/图片记录，
+        # 点了完全没反应」，而且后端日志里那条被堵住的请求 elapsed_ms 还很小
+        #（计时从请求到达处理函数才开始，看不出它在队列里等了多久）。
+        # 同一个坑在 routers/uploads.py 的 save_upload 上也有，一起改的。
+        result = await asyncio.to_thread(
+            image_service.edit_image_with_references,
             settings,
             data,
             file.filename or "image.png",

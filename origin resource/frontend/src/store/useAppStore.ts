@@ -30,6 +30,51 @@ export interface SendMessageOptions {
   continueFrom?: string
 }
 
+/** 图片编辑草稿里的一张参考图。`file` 是原始 File，提交时才真正上传。 */
+export interface ImageRefDraft {
+  id: string
+  file: File
+  note: string
+  preview: string
+}
+
+/**
+ * 图片工坊表单的全部内容。
+ *
+ * 放在 store 而不是 ImagePage 的 useState 里，是因为切到「对话」或点开某条历史
+ * 记录都会把 ImagePage 卸载掉，组件内的 state 跟着没了——用户填了半天的提示词
+ * 和传好的图会凭空消失。提到这里之后，只要软件没关，回到图片页就还是原样。
+ *
+ * 注意 `srcPreview` / `refs[].preview` 是 blob URL，撤销它们的时机必须跟着这份
+ * 草稿的生命周期走（只在移除单张图和「新建图片」时撤），**不能**再挂在 ImagePage
+ * 的卸载上——那等于切个页面就把自己的图全撤成裂图。
+ */
+export interface ImageDraft {
+  tab: 'generate' | 'edit'
+  prompt: string
+  negative: string
+  count: number
+  srcFile: File | null
+  srcPreview: string | null
+  refs: ImageRefDraft[]
+  refHint: string
+  /** 空字符串表示「跟随原图」。 */
+  editSize: string
+}
+
+/** 空白草稿。每次都新建一份，避免多处共享同一个数组引用。 */
+export const emptyImageDraft = (): ImageDraft => ({
+  tab: 'generate',
+  prompt: '',
+  negative: '',
+  count: 1,
+  srcFile: null,
+  srcPreview: null,
+  refs: [],
+  refHint: '',
+  editSize: '',
+})
+
 /** 新会话尚未落库，项目、风格和记忆选择先记在这里，创建时一并提交。 */
 export interface PendingConversationMeta {
   projectId: string | null
@@ -97,8 +142,13 @@ export interface Store {
   images: ImageRecord[]
   imageBusy: boolean
   selectedImageId: string | null
-  /** 自增计数：每次「新建图片」+1，ImagePage 据此清空表单（页签不动）。 */
-  imageFormNonce: number
+  /**
+   * 图片工坊表单的当前内容。跨页面切换保留，只有「新建图片」会清空它。
+   * 生成/编辑成功后**不清**：用户常要在同一句提示词上反复微调再画一版。
+   */
+  imageDraft: ImageDraft
+  /** 局部更新草稿。只传变了的字段，其余保持原样。 */
+  patchImageDraft: (patch: Partial<ImageDraft>) => void
 
   init: () => Promise<void>
   loadConversations: () => Promise<void>
@@ -135,8 +185,10 @@ export interface Store {
   setMode: (m: AppMode) => void
   loadImages: () => Promise<void>
   selectImage: (id: string | null) => void
-  /** 回到空白的图片表单：清掉选中记录，并让 ImagePage 重置输入。 */
+  /** 回到空白的图片表单：清掉选中记录，撤销预览用的 blob URL，草稿重置为空。 */
   newImageDraft: () => void
+  /** 从历史详情返回表单：只清选中记录，草稿原样留着。 */
+  closeImageDetail: () => void
   generateImages: (req: api.GenerateImageRequest) => Promise<void>
   editImage: (
     file: File,
@@ -206,7 +258,10 @@ export const useStore = create<Store>((set, get) => ({
   images: [],
   imageBusy: false,
   selectedImageId: null,
-  imageFormNonce: 0,
+  imageDraft: emptyImageDraft(),
+
+  patchImageDraft: (patch) =>
+    set((s) => ({ imageDraft: { ...s.imageDraft, ...patch } })),
 
   init: async () => {
     // 设置和会话互不依赖，并行读取可以缩短首屏等待时间。
@@ -567,7 +622,16 @@ export const useStore = create<Store>((set, get) => ({
   selectImage: (id) => set({ selectedImageId: id }),
 
   newImageDraft: () =>
-    set((s) => ({ selectedImageId: null, imageFormNonce: s.imageFormNonce + 1 })),
+    set((s) => {
+      // 只有真正丢弃草稿时才撤 blob URL。ImagePage 卸载时不能撤——切到对话页
+      // 或点开一条历史都会卸载它，撤了再回来就是一堆裂图。
+      const { srcPreview, refs } = s.imageDraft
+      if (srcPreview) URL.revokeObjectURL(srcPreview)
+      for (const item of refs) URL.revokeObjectURL(item.preview)
+      return { selectedImageId: null, imageDraft: emptyImageDraft() }
+    }),
+
+  closeImageDetail: () => set({ selectedImageId: null }),
 
   generateImages: async (req) => {
     set({ imageBusy: true, error: null })

@@ -330,6 +330,21 @@
 
 /* 图片详情 */
 .image-detail { max-width: 860px; margin: 0 auto; }
+/* 「返回编辑」：只关详情、不动草稿，和侧边栏的「新建图片」是两回事。 */
+.image-detail-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 5px 12px 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+.image-detail-back:hover { background: var(--bg-hover); color: var(--text); }
 .image-detail-meta {
   display: flex;
   flex-wrap: wrap;

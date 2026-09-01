@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Sparkles, Wand2, Upload, X, Download, FileOutput, Loader2, ImagePlus, ChevronDown, Check,
+  ArrowLeft,
 } from 'lucide-react'
 import { useStore } from '../../../store'
 import { imageFileUrl } from '../../../services/api'
 import { useFileDrop } from '../../../hooks/useFileDrop'
-import { useDesktopChannels, groupByChannel } from '../../../hooks/useDesktopChannels'
+import { useDesktopChannels, groupByChannel, resolveChannelName } from '../../../hooks/useDesktopChannels'
 import { ExportDialog } from './ExportDialog'
 
 /** 参考图上限，与后端 MAX_REFERENCE_IMAGES 保持一致。 */
@@ -14,38 +15,26 @@ const MAX_REFERENCES = 4
 /** 图片编辑可选的固定输出尺寸，不选则跟随原图。 */
 const EDIT_SIZE_PRESETS = ['1024x1024', '1536x1024', '1024x1536']
 
-/** 编辑页里一张待上传的参考图。 */
-interface RefItem {
-  id: string
-  file: File
-  note: string
-  preview: string
-}
-
 /** 图片工作区：未选择历史记录时显示任务表单，选择后显示任务详情。 */
 export function ImagePage() {
   const settings = useStore((s) => s.settings)
   const images = useStore((s) => s.images)
   const selectedImageId = useStore((s) => s.selectedImageId)
   const imageBusy = useStore((s) => s.imageBusy)
-  const imageFormNonce = useStore((s) => s.imageFormNonce)
   const generateImages = useStore((s) => s.generateImages)
   const editImage = useStore((s) => s.editImage)
   const saveSettings = useStore((s) => s.saveSettings)
   const imageApiId = useStore((s) => s.imageApiId)
   const setImageApiId = useStore((s) => s.setImageApiId)
+  const closeImageDetail = useStore((s) => s.closeImageDetail)
 
-  const [tab, setTab] = useState<'generate' | 'edit'>('generate')
-  const [prompt, setPrompt] = useState('')
-  const [negative, setNegative] = useState('')
-  const [count, setCount] = useState(1)
-  const [srcFile, setSrcFile] = useState<File | null>(null)
-  const [srcPreview, setSrcPreview] = useState<string | null>(null)
-  const [refs, setRefs] = useState<RefItem[]>([])
-  const [refHint, setRefHint] = useState('')
-  // 空字符串表示「跟随原图」：不向上游传 size，输出保持原图尺寸与比例。
-  const [editSize, setEditSize] = useState('')
-  // 正在导出的图片文件名，null 表示没开导出对话框。
+  // 表单内容存在 store 里，切走再回来还在（见 ImageDraft 的说明）。
+  const draft = useStore((s) => s.imageDraft)
+  const patch = useStore((s) => s.patchImageDraft)
+  const { tab, prompt, negative, count, srcFile, srcPreview, refs, refHint, editSize } = draft
+
+  // 正在导出的图片文件名，null 表示没开导出对话框。这个是纯粹的一次性 UI 状态，
+  // 不属于「用户填的表单」，所以留在组件里。
   const [exporting, setExporting] = useState<string | null>(null)
   const [modelMenu, setModelMenu] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -57,44 +46,15 @@ export function ImagePage() {
     [images, selectedImageId],
   )
 
-  // 清理 blob URL 时需要“当前最新”的一份，但又不能把它们写进 effect 依赖
-  // （那样每加一张参考图都会触发一次清理）。用 ref 做镜像。
-  const previewsRef = useRef<string[]>([])
-  previewsRef.current = [srcPreview, ...refs.map((item) => item.preview)].filter(
-    (url): url is string => Boolean(url),
-  )
-
-  const revokePreviews = () => {
-    for (const url of previewsRef.current) URL.revokeObjectURL(url)
-    previewsRef.current = []
-  }
-
-  // 侧边栏「新建图片」把 imageFormNonce +1：整张表单回到空白，页签保持不动。
-  // 组件在切回聊天时会卸载，所以挂载时跑一次也只是对着空表单空转。
-  useEffect(() => {
-    revokePreviews()
-    setPrompt('')
-    setNegative('')
-    setCount(1)
-    setSrcFile(null)
-    setSrcPreview(null)
-    setRefs([])
-    setRefHint('')
-    setEditSize('')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageFormNonce])
-
-  // 切走时别把 blob URL 留在内存里。
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => () => revokePreviews(), [])
-
   // 桌面端按渠道分组列绘画模型：只列渠道模型清单里标成 image 用途的那些。
   // 和输入框那个选择器是同一套（见 Composer），区别只有 capability 和
   // 写回的字段（image_model / imageApiId）。
   const { supported: channelsSupported, channels, refresh: refreshChannels } = useDesktopChannels()
   const imageGroups = groupByChannel(channels, 'image')
   const imageModel = settings?.image_model || ''
-  const activeChannelName = imageGroups.find((g) => g.id === imageApiId)?.name || ''
+  // 同 Composer：imageApiId 初始为 null，但请求照样发得出去，所以按主进程那套
+  // 优先级把「真正会被调用的那家」算出来显示，别让渠道名空着。
+  const activeChannelName = resolveChannelName(imageGroups, imageApiId, imageModel)
 
   // 点击外部关闭模型菜单。
   useEffect(() => {
@@ -123,39 +83,42 @@ export function ImagePage() {
 
   const pickFile = (f: File | null) => {
     if (srcPreview) URL.revokeObjectURL(srcPreview)
-    setSrcFile(f)
-    setSrcPreview(f ? URL.createObjectURL(f) : null)
+    patch({ srcFile: f, srcPreview: f ? URL.createObjectURL(f) : null })
   }
 
   const addRefs = (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return
     // 必须在这里就把 FileList 拷成数组：调用方紧接着会清空 input.value，
-    // 而 FileList 是活引用，拖到 setRefs 的 updater 里再取就已经是空的了。
+    // 而 FileList 是活引用，晚一步再取就已经是空的了。
     const incoming = Array.from(files)
     const room = Math.max(0, MAX_REFERENCES - refs.length)
     const picked = incoming.slice(0, room)
-    setRefHint(picked.length < incoming.length ? `参考图最多 ${MAX_REFERENCES} 张，多余的已忽略` : '')
-    if (picked.length === 0) return
+    if (picked.length === 0) {
+      patch({ refHint: `参考图最多 ${MAX_REFERENCES} 张，多余的已忽略` })
+      return
+    }
     const items = picked.map((file) => ({
       id: `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       file,
       note: '',
       preview: URL.createObjectURL(file),
     }))
-    setRefs((prev) => [...prev, ...items])
+    patch({
+      refs: [...refs, ...items],
+      refHint: picked.length < incoming.length
+        ? `参考图最多 ${MAX_REFERENCES} 张，多余的已忽略`
+        : '',
+    })
   }
 
   const removeRef = (id: string) => {
-    setRefs((prev) => {
-      const target = prev.find((item) => item.id === id)
-      if (target) URL.revokeObjectURL(target.preview)
-      return prev.filter((item) => item.id !== id)
-    })
-    setRefHint('')
+    const target = refs.find((item) => item.id === id)
+    if (target) URL.revokeObjectURL(target.preview)
+    patch({ refs: refs.filter((item) => item.id !== id), refHint: '' })
   }
 
   const updateRefNote = (id: string, note: string) => {
-    setRefs((prev) => prev.map((item) => (item.id === id ? { ...item, note } : item)))
+    patch({ refs: refs.map((item) => (item.id === id ? { ...item, note } : item)) })
   }
 
   // 两个投放区各管各的：主图只取第一张并替换，参考图追加（仍受 4 张上限约束）。
@@ -191,6 +154,12 @@ export function ImagePage() {
     return (
       <div className="image-page">
         <div className="image-detail">
+          {/* 返回只清 selectedImageId，草稿原样留着。没有这个按钮的话，回表单
+              就只剩侧边栏那个「新建图片」，而它会把辛苦填好的草稿清空。 */}
+          <button className="image-detail-back" onClick={closeImageDetail}>
+            <ArrowLeft size={14} />
+            返回编辑
+          </button>
           <div className="image-detail-meta">
             <span className={`badge ${selected.mode}`}>
               {selected.mode === 'edit' ? '图片编辑' : '文生图'}
@@ -261,11 +230,17 @@ export function ImagePage() {
         </h2>
 
         <div className="image-tabs">
-          <button className={tab === 'generate' ? 'active' : ''} onClick={() => setTab('generate')}>
+          <button
+            className={tab === 'generate' ? 'active' : ''}
+            onClick={() => patch({ tab: 'generate' })}
+          >
             <Sparkles size={14} />
             文生图
           </button>
-          <button className={tab === 'edit' ? 'active' : ''} onClick={() => setTab('edit')}>
+          <button
+            className={tab === 'edit' ? 'active' : ''}
+            onClick={() => patch({ tab: 'edit' })}
+          >
             <Wand2 size={14} />
             图片编辑
           </button>
@@ -366,7 +341,7 @@ export function ImagePage() {
           rows={4}
           placeholder={tab === 'generate' ? '描述你想生成的画面…' : '描述你想如何修改这张图片…'}
           value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
+          onChange={(e) => patch({ prompt: e.target.value })}
         />
 
         <label className="image-label">负面提示词（可选）</label>
@@ -375,7 +350,7 @@ export function ImagePage() {
           rows={2}
           placeholder="不希望出现的内容…"
           value={negative}
-          onChange={(e) => setNegative(e.target.value)}
+          onChange={(e) => patch({ negative: e.target.value })}
         />
 
         {tab === 'edit' && (
@@ -384,7 +359,7 @@ export function ImagePage() {
             <select
               className="image-size-select"
               value={editSize}
-              onChange={(e) => setEditSize(e.target.value)}
+              onChange={(e) => patch({ editSize: e.target.value })}
             >
               <option value="">跟随原图</option>
               {settings?.image_size && (
@@ -407,7 +382,7 @@ export function ImagePage() {
           {tab === 'generate' && (
             <label className="image-count">
               数量
-              <select value={count} onChange={(e) => setCount(Number(e.target.value))}>
+              <select value={count} onChange={(e) => patch({ count: Number(e.target.value) })}>
                 {[1, 2, 3, 4].map((n) => (
                   <option key={n} value={n}>{n}</option>
                 ))}

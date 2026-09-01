@@ -79,3 +79,31 @@ export function groupByChannel(
     }))
     .filter((group) => group.models.length > 0)
 }
+
+/**
+ * 算出「这次真正会被调用的那家渠道」的名字，用来显示在模型按钮前面。
+ *
+ * 不能只看 apiId：`chatApiId` / `imageApiId` 按设计只存在内存里，初始是 null，
+ * 用户没点开菜单选过就一直为空——于是刚进软件时模型名前面那块渠道名是空的，
+ * 但请求其实照样发得出去（主进程会自己兜底挑一家）。这个函数就是把主进程
+ * `main.cjs: apiAttemptPlan()` 的兜底顺序在界面上复现一遍，让显示和实际一致。
+ *
+ * 优先级和主进程保持一致：明确选中的 apiId → 模型清单里声明了该模型的渠道 →
+ * 第一个可用渠道。
+ *
+ * 已知限制：主进程最后那层兜底是 `enabled[0]`，不看模型清单；而这里的 groups
+ * 已经滤掉了「没有该用途模型」的渠道。所以当模型名在任何渠道都没被声明、且第
+ * 一个启用的渠道恰好没有对应用途的模型时，这里显示的名字可能和实际调用的那家
+ * 不同。为这种边角情况去改主进程的判断不值得，宁可让界面在绝大多数情况下正确。
+ */
+export function resolveChannelName(
+  groups: { id: string; name: string; models: string[] }[],
+  apiId: string | null,
+  model: string,
+): string {
+  if (!groups.length) return ''
+  const picked = (apiId && groups.find((g) => g.id === apiId))
+    || (model ? groups.find((g) => g.models.includes(model)) : undefined)
+    || groups[0]
+  return picked?.name || ''
+}
