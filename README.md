@@ -3,7 +3,7 @@
 一个在本机运行的 AI 聊天与图片生成桌面应用：Electron 外壳 + React/TypeScript 前端 + Python(FastAPI) 后端。
 支持流式回答、思考过程、文件上传、对话分支、代码预览、联网搜索（可存多套配置并一键检测）、可用模型检测、长期记忆、图片生成与图片编辑。
 
-所有对话记录、上传文件和生成的图片都存在本机（`%LOCALAPPDATA%\AI Chatbot\data\`），不会随仓库分发。
+所有对话记录、上传文件和生成的图片都存在本机（`%LOCALAPPDATA%\AI Chatbot\data\`）。
 API Key 由你自己填写，可以放在 `.env` 里，也可以启动后在应用的“设置”页面填。
 
 ## 仓库结构
