@@ -132,15 +132,30 @@ def build_api_messages(
     path: list[dict],
     settings: dict,
     system_extras: list[str] | None = None,
+    tool_schemas: list[dict] | None = None,
 ) -> list[dict]:
     """把消息链转换为 OpenAI 兼容的 messages 数组，处理附件。
 
     system_extras 是项目指令、回答风格这类附加约束，拼在全局系统提示词之后，
     合并成同一条 system 消息 —— 有些上游只认第一条 system。
+    tool_schemas 用于判断是否需要在 system 里加工具使用指引。
     """
     api_msgs = []
     blocks = [(settings.get("system_prompt") or "").strip()]
     blocks += [(text or "").strip() for text in (system_extras or [])]
+
+    # 如果声明了工具，在 system 里加使用指引（提高模型调用工具的主动性）
+    if tool_schemas:
+        tool_guidance = (
+            "## 工具使用原则\n"
+            "你可以使用 web_search 工具联网搜索。以下情况**必须优先调用工具**而不是直接回答：\n"
+            "- 问题涉及实时信息、近期事件、具体数据、价格、产品、公司、厂商\n"
+            "- 问题要求列举、推荐、对比、排名、查询具体名单\n"
+            "- 需要核实事实或你对答案不够确定\n"
+            "不要仅凭训练数据中的陈旧信息作答，优先使用搜索获取最新、准确的信息。"
+        )
+        blocks.append(tool_guidance)
+
     system_prompt = "\n\n".join(b for b in blocks if b)
     if system_prompt:
         api_msgs.append({"role": "system", "content": system_prompt})

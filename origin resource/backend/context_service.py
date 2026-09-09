@@ -120,6 +120,7 @@ def build_context(
     settings: dict,
     model: str,
     system_extras: list[str] | None = None,
+    tool_schemas: list[dict] | None = None,
 ) -> tuple[list[dict], dict]:
     """返回 (api_messages, 压缩信息)。
 
@@ -139,7 +140,7 @@ def build_context(
     }
 
     if not settings.get("context_auto_compact", True):
-        return llm.build_api_messages(path, settings, system_extras), info
+        return llm.build_api_messages(path, settings, system_extras, tool_schemas), info
 
     max_chars = max(_int_setting(settings, "context_max_chars", 120000), 4000)
     trigger_percent = min(max(_int_setting(settings, "context_compact_trigger_percent", 80), 10), 100)
@@ -204,7 +205,7 @@ def build_context(
                 info["summary_count"] = len(summaries)
 
     summary_text = _combined_summary(summaries)
-    api_messages = llm.build_api_messages(remaining, settings, system_extras)
+    api_messages = llm.build_api_messages(remaining, settings, system_extras, tool_schemas)
     if summary_text:
         block = SUMMARY_BLOCK_TEMPLATE.format(summary=summary_text)
         insert_at = 1 if api_messages and api_messages[0]["role"] == "system" else 0
