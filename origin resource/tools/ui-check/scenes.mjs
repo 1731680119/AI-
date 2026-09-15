@@ -20,7 +20,7 @@ export const RESET_STEPS = [
   {
     eval: `(() => {
       // 关掉设置弹窗（点标题栏的 X，走正常的关闭路径）
-      document.querySelector('.modal-settings .modal-header .icon-btn')?.click()
+      document.querySelector('.modal-settings .modal-header .icon-btn:not([title])')?.click()
       // 关掉项目弹窗等其它 modal
       for (const overlay of document.querySelectorAll('.modal-overlay')) {
         overlay.querySelector('.modal-header .icon-btn')?.click()

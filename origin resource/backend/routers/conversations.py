@@ -140,8 +140,12 @@ def set_conversation_memory(conversation_id: str, body: MemoryBody):
 
 @router.put("/{conversation_id}/active_leaf")
 def set_active_leaf(conversation_id: str, body: ActiveLeafBody):
+    tree = db.get_conversation_tree(conversation_id)
+    if not tree:
+        raise HTTPException(404, "会话不存在")
+    if not any(message["id"] == body.leaf_id for message in tree["messages"]):
+        raise HTTPException(400, "分支不属于当前会话")
     # 用户切换到一个历史节点时，继续沿该分支找到最新的叶子消息。
     leaf_id = db.find_latest_leaf(conversation_id, body.leaf_id)
     db.set_active_leaf(conversation_id, leaf_id)
     return {"active_leaf_id": leaf_id}
-

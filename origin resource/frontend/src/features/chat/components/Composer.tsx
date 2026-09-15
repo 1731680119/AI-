@@ -8,7 +8,6 @@ import { uploadFile } from '../../../services/api'
 import { useFileDrop } from '../../../hooks/useFileDrop'
 import { useSortableList } from '../../../hooks/useSortableList'
 import { useDesktopChannels, groupByChannel, resolveChannelName } from '../../../hooks/useDesktopChannels'
-import type { Attachment } from '../../../types'
 
 const THINKING_OPTIONS = ['auto', 'minimal', 'low', 'medium', 'high'] as const
 const THINKING_LABELS: Record<string, string> = {
@@ -36,10 +35,14 @@ export function Composer() {
   const setThinkingLevel = useStore((s) => s.setThinkingLevel)
   const chatApiId = useStore((s) => s.chatApiId)
   const setChatApiId = useStore((s) => s.setChatApiId)
-
-  const [text, setText] = useState('')
-  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const draftKey = useStore((s) => s.currentId) || 'new'
+  const draft = useStore((s) => s.chatDrafts[draftKey])
+  const patchChatDraft = useStore((s) => s.patchChatDraft)
+  const text = draft?.text || ''
+  const attachments = draft?.attachments || []
+  const setText = (value: string) => patchChatDraft(draftKey, { text: value })
   const [uploading, setUploading] = useState(false)
+  const uploadLock = useRef(false)
   const [modelMenu, setModelMenu] = useState(false)
   const [styleMenu, setStyleMenu] = useState(false)
   const [tplMenu, setTplMenu] = useState(false)
@@ -107,18 +110,26 @@ export function Composer() {
     return () => document.removeEventListener('mousedown', onClick)
   }, [memoryMenu])
 
-  const canSend = (text.trim() || attachments.length > 0) && !streaming && !uploading
+  const canSend = !!settings && (text.trim() || attachments.length > 0) && !streaming && !uploading
 
-  const doSend = () => {
+  const doSend = async () => {
     if (!canSend) return
     const content = text
     const atts = attachments
-    setText('')
-    setAttachments([])
-    sendMessage(content, atts)
+    const accepted = await sendMessage(content, atts)
+    if (accepted) {
+      // 清除实际发送的那份草稿，切到其他会话后不能误清新输入。
+      const current = useStore.getState().chatDrafts[draftKey]
+      if (current?.text === content && current.attachments === atts) {
+        patchChatDraft(draftKey, { text: '', attachments: [] })
+      }
+    }
+    taRef.current?.focus()
   }
 
   const handleFiles = async (files: FileList | File[]) => {
+    if (uploadLock.current || useStore.getState().streaming) return
+    uploadLock.current = true
     // 先按设置里的体积上限做本地拦截，避免把明显超限的文件传给后端再被拒绝。
     const singleMaxMb = settings?.single_file_max_mb ?? 20
     const totalMaxMb = settings?.message_files_max_mb ?? 30
@@ -141,13 +152,19 @@ export function Composer() {
           )
           continue
         }
-        const att = await uploadFile(f)
-        usedBytes += att.size || f.size
-        setAttachments((prev) => [...prev, att])
+        try {
+          const att = await uploadFile(f)
+          usedBytes += att.size || f.size
+          const existing = useStore.getState().chatDrafts[draftKey]?.attachments || []
+          patchChatDraft(draftKey, { attachments: [...existing, att] })
+        } catch (e) {
+          useStore.getState().setError(`「${f.name}」上传失败：${(e as Error).message}`)
+        }
       }
     } catch (e) {
       useStore.getState().setError(`上传失败：${(e as Error).message}`)
     } finally {
+      uploadLock.current = false
       setUploading(false)
     }
   }
@@ -187,7 +204,7 @@ export function Composer() {
     const next = [...models]
     const [moved] = next.splice(from, 1)
     next.splice(to, 0, moved)
-    void saveSettings({ ...settings, models: next })
+    void saveSettings({ models: next }).catch((e) => useStore.getState().setError(`保存模型顺序失败：${e.message}`))
   })
 
   // 桌面端按渠道分组列模型：A 家的 GPT 和 B 家的 GPT 是两个可选项，
@@ -207,7 +224,7 @@ export function Composer() {
 
   /** 选定「某家渠道的某个模型」：模型名进设置（能跨重启），渠道 id 只记本次运行。 */
   const pickModel = (name: string, apiId: string | null) => {
-    if (settings && name !== model) void saveSettings({ ...settings, default_model: name })
+    if (settings && name !== model) void saveSettings({ default_model: name }).catch((e) => useStore.getState().setError(`切换模型失败：${e.message}`))
     setChatApiId(apiId)
     setModelMenu(false)
   }
@@ -273,7 +290,9 @@ export function Composer() {
                 <span className="name">{a.name}</span>
                 <button
                   className="remove"
-                  onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
+                  aria-label={`移除附件 ${a.name}`}
+                  disabled={streaming || uploading}
+                  onClick={() => patchChatDraft(draftKey, { attachments: attachments.filter((x) => x.id !== a.id) })}
                 >
                   <X size={12} />
                 </button>
@@ -286,6 +305,7 @@ export function Composer() {
           ref={taRef}
           rows={1}
           placeholder="今天我能帮你什么？"
+          aria-label="消息输入框"
           value={text}
           spellCheck={false}
           disabled={streaming}
@@ -311,7 +331,7 @@ export function Composer() {
               className="icon-btn"
               title="上传文件（图片 / PDF / Word / 文本）"
               onClick={() => fileRef.current?.click()}
-              disabled={uploading}
+              disabled={uploading || streaming}
             >
               <Paperclip size={17} />
             </button>

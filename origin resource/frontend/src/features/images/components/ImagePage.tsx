@@ -76,7 +76,7 @@ export function ImagePage() {
 
   /** 选定「某家渠道的某个绘画模型」：模型名进设置（跨重启），渠道 id 只记本次运行。 */
   const pickModel = (name: string, apiId: string) => {
-    if (settings && name !== imageModel) void saveSettings({ ...settings, image_model: name })
+    if (settings && name !== imageModel) void saveSettings({ image_model: name }).catch((e) => useStore.getState().setError(`切换模型失败：${e.message}`))
     setImageApiId(apiId)
     setModelMenu(false)
   }

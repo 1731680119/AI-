@@ -21,6 +21,9 @@ function patchCall(
   return (calls || []).map((c) => (c.call_id === callId ? { ...c, ...fn(c) } : c))
 }
 
+// 防止用户快速连续切换会话时，较慢的旧请求覆盖当前会话。
+let conversationSelectionToken = 0
+
 export interface SendMessageOptions {
   /** 编辑旧问题时，新问题应连接到哪个父消息。 */
   parentId?: string | null
@@ -102,6 +105,9 @@ export interface Store {
   contextNotice: ContextCompactInfo | null
   /** 正在等用户确认的代码执行。非空时弹确认框，后端此刻停在等待上。 */
   codeExecRequest: CodeExecRequest | null
+  /** 按会话保留本次运行的输入草稿；切换页面不会丢文字和附件。 */
+  chatDrafts: Record<string, { text: string; attachments: Attachment[] }>
+  patchChatDraft: (key: string, patch: Partial<{ text: string; attachments: Attachment[] }>) => void
   /** 答复确认框。approved 为假即拒绝；code 非空表示用户改过代码。 */
   answerCodeExec: (approved: boolean, code?: string, trust?: boolean) => Promise<void>
 
@@ -157,7 +163,8 @@ export interface Store {
   removeConversation: (id: string) => Promise<void>
   rename: (id: string, title: string) => Promise<void>
   refreshTree: () => Promise<void>
-  sendMessage: (content: string, attachments: Attachment[], opts?: SendMessageOptions) => Promise<void>
+  /** 返回后端是否已接收消息；未接收时输入框保留草稿供重试。 */
+  sendMessage: (content: string, attachments: Attachment[], opts?: SendMessageOptions) => Promise<boolean>
   stopStreaming: () => void
   switchBranch: (nodeId: string) => Promise<void>
   setSidebarOpen: (v: boolean) => void
@@ -212,6 +219,16 @@ export const useStore = create<Store>((set, get) => ({
   error: null,
   contextNotice: null,
   codeExecRequest: null,
+  chatDrafts: {},
+  patchChatDraft: (key, patch) => set((s) => ({
+    chatDrafts: {
+      ...s.chatDrafts,
+      [key]: {
+        text: patch.text ?? s.chatDrafts[key]?.text ?? '',
+        attachments: patch.attachments ?? s.chatDrafts[key]?.attachments ?? [],
+      },
+    },
+  })),
 
   answerCodeExec: async (approved, code, trust) => {
     const req = get().codeExecRequest
@@ -264,11 +281,15 @@ export const useStore = create<Store>((set, get) => ({
     set((s) => ({ imageDraft: { ...s.imageDraft, ...patch } })),
 
   init: async () => {
-    // 设置和会话互不依赖，并行读取可以缩短首屏等待时间。
+    // 三组数据互不依赖。项目接口暂时失败时仍应能进入聊天页面，避免一个
+    // 可选功能把整个首屏锁死；设置和会话仍作为核心数据失败处理。
     const [settings, conversations, projects] = await Promise.all([
       api.fetchSettings(),
       api.listConversations(),
-      api.listProjects(),
+      api.listProjects().catch((error) => {
+        logWarn('store', `加载项目失败：${(error as Error).message}`)
+        return get().projects
+      }),
     ])
     document.documentElement.dataset.theme = settings.theme
     set({ settings, conversations, projects })
@@ -279,15 +300,19 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   selectConversation: async (id) => {
-    set({ currentId: id, artifact: null, error: null })
+    const token = ++conversationSelectionToken
+    set({ currentId: id, tree: null, artifact: null, error: null, contextNotice: null })
     if (id) {
       logAction('打开会话', { conversation_id: id })
       try {
-        set({ tree: await api.getConversation(id) })
+        const tree = await api.getConversation(id)
+        if (token === conversationSelectionToken) set({ tree })
       } catch (error) {
         // 会话打不开时界面只是回到空白，不记一条的话这个失败就彻底看不见了。
         logWarn('store', `打开会话失败：${(error as Error).message}`, { conversation_id: id })
-        set({ tree: null, currentId: null })
+        if (token === conversationSelectionToken) {
+          set({ tree: null, currentId: null, error: `打开会话失败：${(error as Error).message}` })
+        }
       }
     } else {
       set({ tree: null })
@@ -295,10 +320,11 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   newConversation: async () => {
+    ++conversationSelectionToken
     // 在某个项目下点「新对话」时，默认继续留在这个项目里。
     const { projectFilter } = get()
     set({
-      currentId: null, tree: null, artifact: null, error: null,
+      currentId: null, tree: null, artifact: null, error: null, contextNotice: null,
       pending: { projectId: projectFilter, styleId: null, memoryEnabled: false, memoryIds: [] },
     })
   },
@@ -306,11 +332,11 @@ export const useStore = create<Store>((set, get) => ({
   removeConversation: async (id) => {
     logAction('删除会话', { conversation_id: id })
     await api.deleteConversation(id)
-    const { currentId } = get()
-    await get().loadConversations()
-    if (currentId === id) {
-      set({ currentId: null, tree: null })
+    if (get().currentId === id) {
+      ++conversationSelectionToken
+      set({ currentId: null, tree: null, artifact: null, contextNotice: null })
     }
+    await get().loadConversations()
   },
 
   rename: async (id, title) => {
@@ -320,14 +346,32 @@ export const useStore = create<Store>((set, get) => ({
 
   refreshTree: async () => {
     const { currentId } = get()
-    if (currentId) set({ tree: await api.getConversation(currentId) })
+    const token = conversationSelectionToken
+    if (currentId) {
+      const tree = await api.getConversation(currentId)
+      if (get().currentId === currentId && token === conversationSelectionToken) set({ tree })
+    }
   },
 
   sendMessage: async (content, attachments, opts = {}) => {
+    // UI 之外再做一层防重入，避免快捷键、点击和异步回调同时触发时重复提交。
+    if (get().streaming) return false
     let { currentId } = get()
     const { settings } = get()
-    set({ error: null })
+    if (!settings || (currentId && get().tree?.id !== currentId)) {
+      set({ error: '会话正在加载，请稍后再发送' })
+      return false
+    }
+    if (!content.trim() && !attachments.length && !opts.regenerateFrom && !opts.continueFrom) return false
+    const ctrl = new AbortController()
+    const selectionToken = conversationSelectionToken
+    const draftKey = currentId || 'new'
+    const sentDraft = get().chatDrafts[draftKey]
+    let accepted = false
+    // 创建会话也属于发送过程，必须在第一个 await 前占用发送状态。
+    set({ error: null, contextNotice: null, streaming: true, abortCtrl: ctrl })
 
+    try {
     // 若无当前会话，先创建
     if (!currentId) {
       const { pending } = get()
@@ -338,10 +382,13 @@ export const useStore = create<Store>((set, get) => ({
         memoryIds: pending.memoryIds,
       })
       currentId = conv.id
-      set({ currentId })
-      await get().loadConversations()
-      set({ tree: await api.getConversation(currentId) })
+      if (draftKey === 'new' && sentDraft) {
+        set((s) => ({ chatDrafts: { ...s.chatDrafts, [conv.id]: sentDraft } }))
+      }
+      const tree = await api.getConversation(currentId)
+      if (selectionToken === conversationSelectionToken) set({ currentId, tree })
     }
+    ctrl.signal.throwIfAborted()
 
     // 只记元数据，不记正文：正文属于对话内容，默认不进日志。
     const label = opts.continueFrom ? '继续生成'
@@ -354,12 +401,6 @@ export const useStore = create<Store>((set, get) => ({
       model: settings?.default_model,
     })
 
-    const ctrl = new AbortController()
-    set({
-      streaming: true,
-      abortCtrl: ctrl,
-    })
-
     // 乐观更新：先插入临时消息，让用户按下发送后立刻看到内容。
     // 请求结束后会从服务器重新读取消息树，临时 ID 不会写入数据库。
     const tempUserId = 'temp-user'
@@ -368,7 +409,7 @@ export const useStore = create<Store>((set, get) => ({
     // 继续生成续写的是已存在的那条回答，所以流式片段直接打到它的真实 ID 上。
     const streamTargetId = opts.continueFrom || tempAsstId
     if (opts.continueFrom) {
-      set((s) => s.tree ? {
+      set((s) => s.tree?.id === currentId ? {
         tree: {
           ...s.tree,
           messages: s.tree.messages.map((m) =>
@@ -377,7 +418,7 @@ export const useStore = create<Store>((set, get) => ({
         },
       } : {})
     } else set((s) => {
-      if (!s.tree) return {}
+      if (!s.tree || s.tree.id !== currentId) return {}
       const msgs = [...s.tree.messages]
       if (!isRegen) {
         msgs.push({
@@ -388,7 +429,9 @@ export const useStore = create<Store>((set, get) => ({
       }
       msgs.push({
         id: tempAsstId,
-        parent_id: tempUserId,
+        parent_id: isRegen
+          ? s.tree.messages.find((m) => m.id === opts.regenerateFrom)?.parent_id ?? null
+          : tempUserId,
         role: 'assistant', content: '', attachments: [], created_at: '',
         thinking: null, streaming: true, thinkingOpen: true,
       })
@@ -398,7 +441,7 @@ export const useStore = create<Store>((set, get) => ({
     const patchAsst = (fn: (m: Message) => Partial<Message>) => {
       // 每收到一个 SSE 小片段，只更新临时回答，避免重建其他历史消息。
       set((s) => {
-        if (!s.tree) return {}
+        if (!s.tree || s.tree.id !== currentId) return {}
         const msgs = s.tree.messages.map((m) =>
           m.id === streamTargetId ? { ...m, ...fn(m) } : m,
         )
@@ -406,7 +449,6 @@ export const useStore = create<Store>((set, get) => ({
       })
     }
 
-    try {
       await api.streamChat(
         {
           conversation_id: currentId!,
@@ -420,6 +462,8 @@ export const useStore = create<Store>((set, get) => ({
           api_id: get().chatApiId || undefined,
         },
         (ev) => {
+          if (ctrl.signal.aborted) return
+          if (ev.type === 'start') accepted = true
           if (ev.type === 'thinking') {
             patchAsst((m) => ({ thinking: (m.thinking || '') + (ev.text as string) }))
           } else if (ev.type === 'content') {
@@ -491,7 +535,7 @@ export const useStore = create<Store>((set, get) => ({
               })),
             }))
           } else if (ev.type === 'context_compacted') {
-            set({ contextNotice: ev.context as ContextCompactInfo })
+            if (get().currentId === currentId) set({ contextNotice: ev.context as ContextCompactInfo })
           } else if (ev.type === 'error') {
             logError('store', `模型返回错误：${ev.message as string}`, {
               conversation_id: currentId,
@@ -499,7 +543,7 @@ export const useStore = create<Store>((set, get) => ({
             })
             set({ error: ev.message as string })
           } else if (ev.type === 'title') {
-            get().loadConversations()
+            void get().loadConversations().catch(() => {})
           }
         },
         ctrl.signal,
@@ -515,17 +559,31 @@ export const useStore = create<Store>((set, get) => ({
       } else {
         logAction('用户中止生成', { conversation_id: currentId })
       }
-    }
-
-    set({ streaming: false, abortCtrl: null })
+    } finally {
     // 用服务器保存后的真实 ID、时间和完整内容替换临时消息。
-    await get().refreshTree()
-    await get().loadConversations()
+      try {
+        if (currentId && get().currentId === currentId) await get().refreshTree()
+        await get().loadConversations()
+      } catch (error) {
+        logWarn('store', `刷新会话失败：${(error as Error).message}`)
+        set((s) => ({
+          error: s.error || `刷新会话失败：${(error as Error).message}`,
+          tree: s.tree ? { ...s.tree, messages: s.tree.messages.map((m) => ({ ...m, streaming: false })) } : null,
+        }))
+      } finally {
+        set({ streaming: false, abortCtrl: null, codeExecRequest: null })
+      }
+    }
+    if (accepted && currentId && draftKey === 'new' && get().chatDrafts[currentId] === sentDraft) {
+      get().patchChatDraft(currentId, { text: '', attachments: [] })
+    }
+    return accepted
   },
 
   stopStreaming: () => {
     get().abortCtrl?.abort()
-    set({ streaming: false, abortCtrl: null })
+    // 等旧请求完成清理再解锁，否则它的 finally 会覆盖下一轮流式状态。
+    set({ codeExecRequest: null })
   },
 
   switchBranch: async (nodeId) => {
@@ -568,6 +626,10 @@ export const useStore = create<Store>((set, get) => ({
     const { projectFilter } = get()
     await Promise.all([get().loadProjects(), get().loadConversations()])
     if (projectFilter === id) set({ projectFilter: null })
+    if (get().pending.projectId === id) set((s) => ({ pending: { ...s.pending, projectId: null } }))
+    if (deleteConversations && !get().conversations.some((c) => c.id === get().currentId)) {
+      await get().selectConversation(null)
+    }
     // 归属被解除或会话被删，当前打开的会话得重新读一次。
     if (get().currentId) await get().refreshTree()
   },
@@ -634,6 +696,7 @@ export const useStore = create<Store>((set, get) => ({
   closeImageDetail: () => set({ selectedImageId: null }),
 
   generateImages: async (req) => {
+    if (get().imageBusy) return
     set({ imageBusy: true, error: null })
     logAction('生成图片', { model: req.model, size: req.size, quality: req.quality })
     try {
@@ -651,6 +714,7 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   editImage: async (file, req, references = []) => {
+    if (get().imageBusy) return
     set({ imageBusy: true, error: null })
     logAction('编辑图片', { model: req.model, references: references.length })
     try {

@@ -3,7 +3,19 @@ import * as diag from '../diagnostics'
 
 export { API_BASE }
 
-type ErrorPayload = { detail?: string }
+/** FastAPI 422 返回数组，不应被插值成 [object Object]。 */
+export function errorMessage(detail: unknown, fallback: string): string {
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail)) {
+    const messages = detail.map((item) => {
+      if (!item || typeof item !== 'object' || typeof item.msg !== 'string') return ''
+      const field = Array.isArray(item.loc) ? item.loc.filter((part: unknown) => part !== 'body').join('.') : ''
+      return field ? `${field}：${item.msg}` : item.msg
+    }).filter(Boolean)
+    if (messages.length) return messages.join('；')
+  }
+  return fallback
+}
 
 /**
  * 带诊断的请求封装。
@@ -47,9 +59,9 @@ async function send(url: string, init?: RequestInit): Promise<Response> {
 }
 
 async function failure(response: Response): Promise<Error> {
-  const payload = await response.json().catch(() => ({} as ErrorPayload))
+  const payload = await response.json().catch(() => ({}))
   const traceId = response.headers.get('X-Trace-Id') || ''
-  const message = payload.detail || `请求失败（HTTP ${response.status}）`
+  const message = errorMessage(payload?.detail, `请求失败（HTTP ${response.status}）`)
   // 把 trace_id 带进错误提示，用户截图报障时也能定位到具体那一次请求。
   return new Error(traceId ? `${message}（编号 ${traceId}）` : message)
 }

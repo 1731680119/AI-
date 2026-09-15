@@ -6,11 +6,30 @@ from pydantic import BaseModel
 
 import database as db
 import logging_config as diag
+import model_params
 import model_probe
 import web_search
 
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+#: 存在 settings 表里、但**不能出现在这个接口的返回值**里的键。
+#:
+#: 前端保存设置的写法一律是 `saveSettings({ ...settings, 改动的那项 })`——把
+#: GET 拿到的整份原样 PUT 回来。而 SettingsPatch 是 extra="forbid"，所以只要
+#: 返回值里混进一个它没声明的键，下一次保存就会 422，表现是「选模型、拖模型
+#: 顺序、保存设置」统统失败。
+#:
+#: `model_param_quirks` 正是这样一个键：它由 model_params 自己读写（走
+#: db.get_settings()，不经过这里），是后端内部的记账，前端既用不上也不该回写
+#: ——回写等于让一份旧副本盖掉刚学到的修正。所以在接口边界剔掉，而不是给
+#: SettingsPatch 补一个字段。往 settings 表里加新的内部键时，记得也加到这里。
+_INTERNAL_KEYS = frozenset({model_params.SETTINGS_KEY})
+
+
+def _public(settings: dict) -> dict:
+    """剔掉内部键后的设置，用于所有会回到前端的返回值。"""
+    return {key: value for key, value in settings.items() if key not in _INTERNAL_KEYS}
 
 
 class SettingsPatch(BaseModel):
@@ -25,9 +44,9 @@ class SettingsPatch(BaseModel):
     max_tokens: int | None = None
     default_thinking: str | None = None
     theme: str | None = None
-    # 图片生成：image_providers 是多渠道列表（顺序即故障转移顺序），
-    # 下面三个旧字段是第一个可用渠道的镜像，留着给老界面和旧数据用。
-    image_providers: list[dict] | None = None
+    # 图片生成：1.2.19 起渠道并进桌面端的「多 API」，image_providers 已删除。
+    # 下面三个字段仍然接受写入，但只由桌面层在发图片请求前后临时改写
+    # （和聊天的 base_url / api_key 同一套握手），设置界面里只剩尺寸和质量。
     image_base_url: str | None = None
     image_api_key: str | None = None
     image_model: str | None = None
@@ -67,7 +86,7 @@ class SettingsPatch(BaseModel):
 
 @router.get("")
 def get_settings():
-    return db.get_settings()
+    return _public(db.get_settings())
 
 
 @router.put("")
@@ -81,7 +100,7 @@ def put_settings(patch: SettingsPatch):
         "INFO", "backend", "设置已更新",
         logger="backend.settings", changed=sorted(data.keys()),
     )
-    return result
+    return _public(result)
 
 
 class SearchProviderTest(BaseModel):

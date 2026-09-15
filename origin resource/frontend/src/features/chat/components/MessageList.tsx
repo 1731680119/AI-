@@ -51,10 +51,14 @@ function CopyAction({ text }: { text: string }) {
   return (
     <button
       title="复制"
-      onClick={() => {
-        navigator.clipboard.writeText(text)
-        setCopied(true)
-        setTimeout(() => setCopied(false), 1500)
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text)
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1500)
+        } catch {
+          useStore.getState().setError('复制失败，请选中文字后按 Ctrl+C 复制')
+        }
       }}
     >
       {copied ? <Check size={13} /> : <Copy size={13} />}
@@ -86,7 +90,7 @@ function UserMessage({ msg }: { msg: Message }) {
   const [draft, setDraft] = useState('')
 
   const submitEdit = () => {
-    if (!draft.trim()) return
+    if (streaming || (!draft.trim() && !msg.attachments?.length)) return
     setEditing(false)
     // 编辑重发：以原消息的 parent 为父节点新建分支
     sendMessage(draft, msg.attachments || [], { parentId: msg.parent_id })
@@ -228,6 +232,7 @@ export function MessageList() {
   const path = useActivePath()
   const currentId = useStore((s) => s.currentId)
   const streaming = useStore((s) => s.streaming)
+  const loading = useStore((s) => !!s.currentId && !s.tree)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickBottom = useRef(true)
 
@@ -253,6 +258,10 @@ export function MessageList() {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [currentId])
+
+  if (loading) {
+    return <div className="messages" ref={scrollRef}><div className="typing-hint" role="status"><Loader2 size={14} className="spin" /> 正在加载对话…</div></div>
+  }
 
   if (!currentId || path.length === 0) {
     return (

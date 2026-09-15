@@ -137,7 +137,14 @@ def chat(body: ChatBody):
         user_message = None
     else:
         # 普通发送接在当前分支末尾；编辑重发则由前端明确指定父节点。
-        parent_id = body.parent_id if body.parent_id is not None else tree["active_leaf_id"]
+        parent_id = body.parent_id if "parent_id" in body.model_fields_set else tree["active_leaf_id"]
+        # 显式 null 表示编辑第一条消息，从根新建分支；省略字段才沿用当前叶子。
+        # 客户端传来的父节点必须属于当前会话。
+        # 否则一个过期/串会话的 ID 会把消息树接断，后续上下文也会丢失。
+        if parent_id:
+            parent = next((m for m in tree["messages"] if m["id"] == parent_id), None)
+            if not parent:
+                raise HTTPException(400, "消息所在会话已变化，请刷新后重试")
         user_message = db.add_message(
             conversation_id,
             "user",
@@ -148,10 +155,14 @@ def chat(body: ChatBody):
         user_message_id = user_message["id"]
 
     current_path = _build_message_path(conversation_id, user_message_id)
+    # 每个工具各自判断是否可用，没配好的（如缺搜索密钥）不会声明给模型。
+    # 提前计算 tool_schemas 以便传给 build_context（用于在 system prompt 里加工具使用指引）。
+    tool_schemas = tools.available_schemas(settings)
     # 上下文超过阈值时先把靠前的历史压缩成摘要，再拼装请求体。
     api_messages, context_info = context_service.build_context(
         conversation_id, current_path, settings, model,
         system_extras=_system_extras(tree, settings),
+        tool_schemas=tool_schemas,
     )
     if continue_target:
         api_messages = api_messages + [
@@ -198,8 +209,7 @@ def chat(body: ChatBody):
                 tool_calls=final_tools,
             )
 
-        # 每个工具各自判断是否可用，没配好的（如缺搜索密钥）不会声明给模型。
-        tool_schemas = tools.available_schemas(settings)
+        # tool_schemas 已在上面提前计算好，直接复用。
         run_tool = None
         if tool_schemas:
             # conversation_id 模型给不了，由这里注入：remember 要记下记忆来自哪次对话。

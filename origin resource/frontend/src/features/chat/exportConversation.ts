@@ -11,7 +11,9 @@ export function activePathOf(tree: ConversationTree | null): Message[] {
   let cur = tree.active_leaf_id ? byId.get(tree.active_leaf_id) : undefined
   // 兜底：若 active_leaf 缺失取最后一条
   if (!cur) cur = tree.messages[tree.messages.length - 1]
-  while (cur) {
+  const seen = new Set<string>()
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id)
     path.unshift(cur)
     cur = cur.parent_id ? byId.get(cur.parent_id) : undefined
   }

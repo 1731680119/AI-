@@ -46,7 +46,7 @@ export default function App() {
         </div>
 
         {error && (
-          <div className="error-banner">
+          <div className="error-banner" role="alert">
             <span>{error}</span>
             <button className="icon-btn" onClick={() => setError(null)}><X size={14} /></button>
           </div>

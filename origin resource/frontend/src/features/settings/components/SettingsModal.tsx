@@ -87,6 +87,7 @@ export function SettingsModal() {
 
   const [draft, setDraft] = useState<Settings | null>(null)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
   const [section, setSection] = useState<SectionKey>('chat')
   // 正在检测的搜索配置 id，以及每套配置最近一次的检测结果。
   const [testingId, setTestingId] = useState('')
@@ -106,7 +107,8 @@ export function SettingsModal() {
   const { hasUpdate } = useUpdateState()
 
   useEffect(() => {
-    if (settingsOpen && settings) {
+    if (!settingsOpen) setDraft(null)
+    else if (settings && !draft) {
       // styles 里的对象也要拷一层，否则编辑风格会直接改到 store 里的数据。
       setDraft({
         ...settings,
@@ -116,7 +118,7 @@ export function SettingsModal() {
         search_providers: (settings.search_providers || []).map((p) => ({ ...p })),
       })
     }
-  }, [settingsOpen, settings])
+  }, [settingsOpen, settings, draft])
 
   // 每次重新打开都回到第一栏，避免上次停在「诊断」这种角落里。
   useEffect(() => {
@@ -128,6 +130,7 @@ export function SettingsModal() {
       setMaximized(false)
       setConfirmClose(null)
       setExtrasDirty(false)
+      setSaveError('')
     }
   }, [settingsOpen])
 
@@ -312,6 +315,8 @@ export function SettingsModal() {
     : { width: `${modalSize.w}px`, height: `${modalSize.h}px`, maxWidth: 'none', maxHeight: 'none' }
 
   const save = async () => {
+    if (saving) return
+    setSaveError('')
     setSaving(true)
     try {
       // 多 API 那一栏由桌面注入层自己存，先存它再存普通设置——顺序和以前
@@ -329,6 +334,9 @@ export function SettingsModal() {
       }
       await saveSettings(d)
       setSettingsOpen(false)
+    } catch (error) {
+      setSaveError(`保存失败：${(error as Error).message}`)
+      throw error
     } finally {
       setSaving(false)
     }
@@ -339,6 +347,7 @@ export function SettingsModal() {
    * 没有就直接关——没改过还要问一句是纯添乱。
    */
   const requestClose = () => {
+    if (saving) return
     if (dirty) setConfirmClose('close')
     else setSettingsOpen(false)
   }
@@ -394,6 +403,7 @@ export function SettingsModal() {
           </div>
         </div>
 
+        {saveError && <div className="error-banner" role="alert">{saveError}</div>}
         <div className="settings-split">
           <nav className="settings-nav" aria-label="设置分类">
             {sections.map(({ key, label, icon: Icon }) => (

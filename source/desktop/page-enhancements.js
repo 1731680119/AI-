@@ -49,8 +49,11 @@
     const requestController = new AbortController()
     const abortFromCaller = () => requestController.abort(init.signal?.reason)
     init.signal?.addEventListener('abort', abortFromCaller, { once: true })
+    if (init.signal?.aborted) abortFromCaller()
     try {
+      requestController.signal.throwIfAborted()
       token = await desktop.beginApiAttempt({ apiId: api.id, model })
+      requestController.signal.throwIfAborted()
       let response
       try {
         response = await originalFetch(input, { ...init, signal: requestController.signal })
@@ -87,6 +90,14 @@
           }
         }
       }
+      // 上游末事件可能没有空行结尾；与前端保持相同的尾缓冲处理。
+      buffer += decoder.decode()
+      const lastEvent = parseEventBlock(buffer)
+      if (lastEvent) {
+        if (lastEvent.type === 'done') sawDone = true
+        if (lastEvent.type === 'error') failureMessage = lastEvent.message || '请求失败'
+        controller.enqueue(sseEvent(lastEvent))
+      }
       if (!failureMessage && !sawDone) failureMessage = 'API 响应意外中断'
     } catch (error) {
       if (init.signal?.aborted || error?.name === 'AbortError') {
@@ -98,6 +109,10 @@
       // 连接层的失败（打不通、超时、非 200）后端不会发 error 事件，这里补一个。
       controller.enqueue(sseEvent({ type: 'error', message: failureMessage }))
     } finally {
+      // 超时也必须断开原始连接，否则界面已报错，后端还继续生成并占资源。
+      requestController.abort()
+      try { await reader?.cancel() } catch {}
+      reader?.releaseLock()
       init.signal?.removeEventListener('abort', abortFromCaller)
       if (token) await desktop.endApiAttempt(token).catch(() => {})
     }
@@ -287,7 +302,8 @@
       box.classList.remove('visible')
       return
     }
-    box.querySelector('span:last-child').textContent = next
+    const label = box.querySelector('span:last-child')
+    if (label && label.textContent !== next) label.textContent = next
   }
 
   // 这里原来监听 chatbot-api-match-waiting / -complete 两个事件，给轮询选渠道
@@ -387,10 +403,15 @@
   }
 
   function retryCurrentMessage() {
+    const input = document.querySelector('.composer textarea')
+    const draft = input?.value
+    let attempts = 0
     const attempt = () => {
+      if (!input?.isConnected || input.value !== draft || ++attempts > 20) return
       const button = document.querySelector('.send-btn')
       if (button && !button.disabled && !button.title?.includes('停止')) button.click()
-      else setTimeout(attempt, 250)
+      else if (draft?.trim()) setTimeout(attempt, 100)
+      else showToast('请在回答下方点击重新生成，或重新输入消息')
     }
     setTimeout(attempt, 150)
   }
@@ -932,14 +953,20 @@
     return heading ? { slot: null, heading } : null
   }
 
+  const settingsLoads = new WeakSet()
   async function injectSettings(body) {
-    if (!body.isConnected || body.querySelector('.enh-settings-section')) return
+    if (!body.isConnected || body.querySelector('.enh-settings-section') || settingsLoads.has(body)) return
     // 项目编辑这类弹窗也有 .modal-body，先确认这是设置面板再去读配置。
     if (!settingsHost(body)) return
+    // showWaiting 自身也会改变 DOM。先登记，再 await IPC，避免观察器反复发起加载。
+    settingsLoads.add(body)
     showWaiting('enhancement-settings-load', '正在读取 API 设置，请稍候…')
     let data
     try {
       data = await desktop.getEnhancements()
+    } catch (error) {
+      showToast(`读取 API 设置失败：${error?.message || error}，请关闭设置后重试`)
+      return
     } finally {
       hideWaiting('enhancement-settings-load')
     }
