@@ -75,6 +75,37 @@ test('创建失败保留草稿并释放发送状态', async () => {
   assert.match(state().error, /offline/)
 })
 
+// 1.2.24：清空草稿的时机从「发送完成后」挪到了「发送前」，由 Composer.doSend 负责。
+// store 自己不再碰 chatDrafts——下面两条锁住这个分工，防止以后有人把清空逻辑加回 store。
+test('sendMessage 成功后不自己清草稿（清空由 Composer 在发送前做）', async () => {
+  // 模拟 Composer 已经在发送前清空了草稿，store 不该再往里写回什么。
+  state().patchChatDraft('new', { text: '', attachments: [] })
+  globalThis.fetch = async (url, init) => {
+    calls.push([url, init])
+    if (url === '/api/chat') {
+      return new Response(new ReadableStream({
+        start(c) { c.enqueue(event({ type: 'start' })); c.enqueue(event({ type: 'done' })); c.close() },
+      }), { status: 200 })
+    }
+    if (init?.method === 'POST') return json({ id: 'conv-1' })
+    if (url === '/api/conversations') return json([])
+    return json(tree('conv-1'))
+  }
+  assert.equal(await state().sendMessage('sent already', []), true)
+  // 新会话建好后，store 不该把发出去的内容搬到新 ID 的草稿上。
+  assert.equal(state().chatDrafts['conv-1']?.text ?? '', '')
+  assert.equal(state().streaming, false)
+})
+
+test('发送失败时 store 保留草稿原样，交给 Composer 决定退回', async () => {
+  // Composer 已清空，store 不负责退回，但也绝不能凭空写入内容。
+  state().patchChatDraft('new', { text: '', attachments: [] })
+  globalThis.fetch = async (_url, init) => init?.method === 'POST' ? json({ detail: 'offline' }, 503) : json([])
+  assert.equal(await state().sendMessage('failed text', []), false)
+  assert.equal(state().chatDrafts.new.text, '')
+  assert.equal(state().streaming, false)
+})
+
 test('快速切换会话时旧成功响应不能覆盖新会话', async () => {
   const slow = deferred()
   globalThis.fetch = (url) => url.endsWith('/a') ? slow.promise : Promise.resolve(json(tree('b')))

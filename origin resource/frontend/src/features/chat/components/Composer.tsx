@@ -116,12 +116,18 @@ export function Composer() {
     if (!canSend) return
     const content = text
     const atts = attachments
+    // 先清空再发送：sendMessage 要等整轮流式回复结束才 resolve，
+    // 放在 await 之后清会让已发出去的文字一直挂在输入框里（看着像没发出去）。
+    patchChatDraft(draftKey, { text: '', attachments: [] })
     const accepted = await sendMessage(content, atts)
-    if (accepted) {
-      // 清除实际发送的那份草稿，切到其他会话后不能误清新输入。
-      const current = useStore.getState().chatDrafts[draftKey]
-      if (current?.text === content && current.attachments === atts) {
-        patchChatDraft(draftKey, { text: '', attachments: [] })
+    if (!accepted) {
+      // 没发出去就把内容退回输入框，别让用户白打一遍。
+      // 会话可能是这轮里新建的（draftKey 从 'new' 变成真实 ID），按当前的 key 退。
+      const restoreKey = useStore.getState().currentId || 'new'
+      const current = useStore.getState().chatDrafts[restoreKey]
+      // 仅在输入框仍是空的时候退回，不能盖掉用户这期间打的新内容。
+      if (!current?.text && !current?.attachments?.length) {
+        patchChatDraft(restoreKey, { text: content, attachments: atts })
       }
     }
     taRef.current?.focus()

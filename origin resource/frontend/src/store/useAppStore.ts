@@ -365,8 +365,6 @@ export const useStore = create<Store>((set, get) => ({
     if (!content.trim() && !attachments.length && !opts.regenerateFrom && !opts.continueFrom) return false
     const ctrl = new AbortController()
     const selectionToken = conversationSelectionToken
-    const draftKey = currentId || 'new'
-    const sentDraft = get().chatDrafts[draftKey]
     let accepted = false
     // 创建会话也属于发送过程，必须在第一个 await 前占用发送状态。
     set({ error: null, contextNotice: null, streaming: true, abortCtrl: ctrl })
@@ -382,9 +380,8 @@ export const useStore = create<Store>((set, get) => ({
         memoryIds: pending.memoryIds,
       })
       currentId = conv.id
-      if (draftKey === 'new' && sentDraft) {
-        set((s) => ({ chatDrafts: { ...s.chatDrafts, [conv.id]: sentDraft } }))
-      }
+      // 草稿的清空与失败退回都由 Composer.doSend 负责（它在发送前就清了），
+      // 这里不再把 'new' 的草稿搬到新会话 ID 上——那份内容已经发出去了。
       const tree = await api.getConversation(currentId)
       if (selectionToken === conversationSelectionToken) set({ currentId, tree })
     }
@@ -573,9 +570,6 @@ export const useStore = create<Store>((set, get) => ({
       } finally {
         set({ streaming: false, abortCtrl: null, codeExecRequest: null })
       }
-    }
-    if (accepted && currentId && draftKey === 'new' && get().chatDrafts[currentId] === sentDraft) {
-      get().patchChatDraft(currentId, { text: '', attachments: [] })
     }
     return accepted
   },

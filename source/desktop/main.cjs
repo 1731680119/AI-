@@ -24,6 +24,7 @@ const diag = require('./diagnostics-logger.cjs')
 const archive = require('./diagnostics-archive.cjs')
 const updater = require('./updater.cjs')
 const splash = require('./splash.cjs')
+const repoSync = require('./repo-sync-check.cjs')
 
 const APP_NAME = 'AI Chatbot'
 const CLOSE_DELAY_MS = 5000
@@ -1166,6 +1167,86 @@ function prepareQuitForUpdate() {
 updater.registerIpc({ beforeQuit: prepareQuitForUpdate })
 
 /**
+ * 启动时的「本地库 vs 云端库」检查。
+ *
+ * 放在窗口出来之后、后台跑：fetch 要走网络，在它返回之前界面不该空着。
+ * 延迟几秒再开始，避开启动那阵子的磁盘和网络高峰（更新检查也在这个窗口期）。
+ *
+ * 不是 git 仓库（普通用户从 Release 装的包）就整体跳过，一行日志都不写。
+ * 一致也静默。只有真的不一致才弹窗，且永远只读——要动仓库交给那两个 .bat。
+ */
+const REPO_SYNC_DELAY_MS = 3000
+
+function scheduleRepoSyncCheck() {
+  setTimeout(() => {
+    let result
+    try {
+      // 从 exe 所在目录往上找仓库根。打包后 __dirname 在 asar 里，不能拿它找。
+      const repoDir = repoSync.findRepoRoot(path.dirname(process.execPath))
+      if (!repoDir) return
+      result = repoSync.inspect(repoDir)
+    } catch (error) {
+      // 检查本身出问题绝不能影响正常使用。
+      diag.warn('repo-sync', `同步检查异常：${error.message}`)
+      return
+    }
+    if (!repoSync.needsAttention(result)) {
+      if (result.status === 'in-sync') diag.info('repo-sync', '本地与云端一致')
+      return
+    }
+    diag.warn('repo-sync', `本地与云端不一致：${result.status}`, {
+      behind: result.behind, ahead: result.ahead, dirtyFiles: result.dirtyFiles,
+    })
+    promptRepoOutOfSync(result)
+  }, REPO_SYNC_DELAY_MS).unref?.()
+}
+
+/**
+ * 不一致时的弹窗。三个按钮：开同步脚本、退出、继续。
+ *
+ * 点「打开同步脚本」之后要退出软件：那些脚本第一步就是检查应用是否在运行
+ * （运行中的 SQLite 处于 WAL 状态，此时 pull 下来的 db 可能是坏的），
+ * 不退出的话脚本只会停在那句警告上。
+ */
+function promptRepoOutOfSync(result) {
+  const text = repoSync.describe(result)
+  const scriptName = repoSync.scriptFor(result)
+  const scriptPath = path.join(result.repoDir, scriptName)
+  const hasScript = fs.existsSync(scriptPath)
+
+  const buttons = hasScript
+    ? [`打开「${scriptName}」并退出`, '只退出软件', '继续使用']
+    : ['退出软件', '继续使用']
+
+  dialog
+    .showMessageBox({
+      type: 'warning',
+      title: text.title,
+      message: text.message,
+      detail: hasScript
+        ? `${text.detail}\n\n同步脚本：${scriptPath}`
+        : `${text.detail}\n\n没有在仓库根目录找到 ${scriptName}，需要手动同步。`,
+      buttons,
+      defaultId: 0,
+      cancelId: buttons.length - 1,
+      noLink: true,
+    })
+    .then(({ response }) => {
+      const continueIndex = buttons.length - 1
+      if (response === continueIndex) return
+      if (hasScript && response === 0) {
+        // 用 shell.openPath 让资源管理器去起这个 .bat，它会带上自己的控制台窗口。
+        // 直接 spawn 的话子进程随本进程一起死，脚本刚跑起来就被带走了。
+        shell.openPath(scriptPath).catch(() => {})
+      }
+      isQuitting = true
+      cancelScheduledShutdown()
+      app.quit()
+    })
+    .catch(() => { /* 弹窗失败不影响使用 */ })
+}
+
+/**
  * 上次异常退出后的提示。
  *
  * 顺序是先打包再弹窗：闪退时后端多半没起来，等用户点按钮才打包很可能又赶上一次崩溃，
@@ -1351,6 +1432,8 @@ if (hasSingleInstanceLock) {
       createWindow()
       updater.init(broadcastUpdateState, () => enhancements.updateProxy)
       if (!lastRun.wasClean) promptLastRunCrashed(lastRun)
+      // 多机同步检查：不是 git 仓库就自动跳过，不一致才弹窗。见 repo-sync-check.cjs。
+      scheduleRepoSyncCheck()
       // 清理放在窗口出来之后，纯磁盘操作不该拖慢启动；每天最多跑一次由模块内部把关。
       const swept = archive.cleanup(diag.paths().logDir)
       if (!swept.skipped && swept.removed.length) {
