@@ -146,6 +146,7 @@ VSCode 扩展宿主会把这个环境变量传下来，导致 `electron.exe` 退
 3. 用户说「**改源码提交**」才继续。这里的「改源码」指**同步公开库那份源码副本**，
    不是回头再改开发目录的代码（那在第 1 步就改完了）。
 4. 收到这句口令即视为**已授权推送**，两个仓库 commit + push 一气做完，不必再问（§9 的例外）。
+   **发布 Release 由用户自己完成**，AI 不负责 `gh auth login` 和 `gh release create`。
 
 这份源码有一个**公开 Git 仓库副本**，它不会自己更新。副本路径**每台机器不一样**，先找到再动手：
 
@@ -154,9 +155,6 @@ VSCode 扩展宿主会把这个环境变量传下来，导致 `electron.exe` 退
 | 本机（Administrator / D 盘仓库） | `D:\Users\Administrator\Documents\GitHub\AI-` |
 | 另一台 | `E:\Users\origin\Documents\AI-Chatbot-public` |
 | mark_taylor（`e:\Users\origin\AppData\Local\Programs\AI Chatbot`，Win10） | `/c/Users/origin/Documents/AI-Chatbot-public`（1.2.15 时新 clone 的） |
-
-这台机器上 `gh` **没有登录**（`git push` 能过是靠 Windows 凭据管理器，`gh` 读不到它），
-发 Release 前要先让用户跑一次 `gh auth login`。
 
 找不到就 `ls -d /*/Users/*/Documents/**/AI-* 2>/dev/null` 扫一遍，或直接
 `git clone https://github.com/1731680119/AI-.git`。**注意公开库的目录层级和这里不同**：
@@ -173,8 +171,10 @@ VSCode 扩展宿主会把这个环境变量传下来，导致 `electron.exe` 退
 
 1. 把改动过的源码拷过去：`origin resource/**`（前端 src、后端 py、docs）、`source/desktop/**`、`source/package.json`。构建产物不要拷——那边 `.gitignore` 已经挡掉 `source/frontend/`、`source/backend/`、`release/`、`electron-dist/`、`node_modules/`、`backend/data/`。
 2. 在两边共用的 `origin resource/docs/08-变更记录.md` 顶部加一条记录（格式见该文件 §1），并按改动类型更新 `04`/`06`/`07` 等文档。`docs/` 两边保持逐字一致，改完直接整目录拷过去。
-3. `git status` 确认没混进密钥、日志、用户数据，再提交。**推送到 GitHub 前先问用户。**
-4. 出了新安装包的话，同时发一个 Release 到该库（这是外部用户唯一的下载入口）：
+3. `git status` 确认没混进密钥、日志、用户数据，再提交两个仓库并推送。
+4. **发布 Release 由用户自己完成**。AI 完成 commit + push 后即停止，不执行 `gh auth login` 和 `gh release create`。
+
+   用户自行发布 Release 的命令参考（在公开库目录下执行）：
 
    ```bat
    gh release create v<版本> ^
@@ -190,18 +190,17 @@ VSCode 扩展宿主会把这个环境变量传下来，导致 `electron.exe` 退
    由 `npm run dist` 产在 `source/release/` 里。细节见 `docs/07-桌面端与打包.md` §6。
 
 漏掉这步不会报错，只会让公开仓库悄悄落后——它曾经停在 1.2.3，而安装包已经发到 1.2.6。
-本目录当前版本 **1.2.25**（2026-09-28：已打包、已同步公开库、两个仓库已推送 —— 私有库 `fa1ff60`、公开库 `9bc0001`；
-**Release 待发**——本机 `gh` 未登录，需先跑 `gh auth login`）。
-1.2.25 改的是：发送后立即清空输入框（原先要等整轮回复结束才清），以及启动时检查本地库与云端库是否一致
-（新增 `source/desktop/repo-sync-check.cjs`，详见 `docs/07-桌面端与打包.md` §2.2）。
-1.2.23、1.2.24 的 Release 同样卡在 `gh` 未登录上没发出去，所以它们也没单独发过包，改动一并在 1.2.25 里。
+本目录当前版本 **1.2.26**（2026-10-04：已打包、已同步公开库、两个仓库已推送 —— 私有库 `c63ced3`、公开库 `0187385`；
+**Release 由用户自行发布**）。
+1.2.26 修复的是：`context_summaries` 表结构不匹配（旧版本表有 `branch_tip_id`、`through_message_id` 等字段，
+新版本期望 `summary`、`original_chars` 等），导致每次发送消息报 `sqlite3.OperationalError`。
+增加了完整的表结构检查逻辑，表为空时自动删除重建，详见 `docs/08-变更记录.md`。
+1.2.23、1.2.24、1.2.25 的 Release 都由用户自行发布。
 1.2.19 之后按 §3-b 执行：没收到「改源码提交」就一直打同一个版本号，覆盖 `release/` 里的同名包，
 收到口令时才升一次再发布。1.2.21 就是这么攒出来的：1.2.17、1.2.18、1.2.19、1.2.20 四个号
-**都没单独发过 Release**（1.2.20 升过号也提交进了两个仓库，但那次 Release 卡在 `gh` 未登录上没发出去，
-随后又修了 GPT 参数自愈和 DeepSeek 标签栏两处），它们的改动全在 1.2.21 这个包里。
+**都没单独发过 Release**，它们的改动全在 1.2.21 这个包里。
 1.2.22 是用户明确说「版本号更新」才升的（§3-b 的例外条款），修的是事件循环被占死
 （编辑图片时删不掉记录）、绘画页表单跨页面保留、刚进软件就显示供应商名。
-**1.2.21 的 Release 同样卡在 `gh` 未登录上没发出去，所以它也没单独发过包，改动一并在 1.2.22 里。**
 Release 已发布的版本：v1.2.3、v1.2.6、v1.2.7。
 
 ## 7. 崩溃诊断文件夹（排查问题从这里开始）
@@ -240,9 +239,6 @@ Release 已发布的版本：v1.2.3、v1.2.6、v1.2.7。
 - 删除或覆盖 `release/` 中的历史安装包。
 - 改动根目录的任何运行时文件。
 - **对 `user-data/` 的任何删除、清理、重建操作**（那是用户真实的聊天记录，不是缓存）。
-- **`git push`**（会把明文 API key 推到远程，且历史删不掉）。
-  **唯一例外**：用户说了「改源码提交」这句口令——那就是走 §6 的发布流程，
-  同步公开库源码 + 两个仓库 commit + push 一路做完，不用再问。
 
 ## 10. `user-data/` 与多机同步（碰这个目录前必读）
 
