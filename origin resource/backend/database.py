@@ -137,6 +137,38 @@ def init_db():
             # web_search_call 原样回传给上游留出位置（Responses API 要求如此）。
             db.execute("ALTER TABLE messages ADD COLUMN tool_calls TEXT")
 
+        # 检查 context_summaries 表结构是否正确
+        summary_columns = {row["name"] for row in db.execute("PRAGMA table_info(context_summaries)")}
+        expected_columns = {"id", "conversation_id", "covered_until_message_id", "summary",
+                          "original_chars", "summary_chars", "created_at"}
+        if summary_columns != expected_columns:
+            # 旧表结构不匹配（可能有 branch_tip_id、through_message_id、content 等旧字段）
+            # 先检查是否有数据
+            count = db.execute("SELECT COUNT(*) FROM context_summaries").fetchone()[0]
+            if count == 0:
+                # 没有数据，直接删除重建
+                db.execute("DROP TABLE IF EXISTS context_summaries")
+                db.execute("DROP INDEX IF EXISTS idx_context_summaries_conv")
+                db.execute("""
+                    CREATE TABLE context_summaries (
+                        id TEXT PRIMARY KEY,
+                        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                        covered_until_message_id TEXT NOT NULL,
+                        summary TEXT NOT NULL,
+                        original_chars INTEGER NOT NULL DEFAULT 0,
+                        summary_chars INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL
+                    )
+                """)
+                db.execute(
+                    "CREATE INDEX idx_context_summaries_conv ON context_summaries(conversation_id)"
+                )
+            else:
+                # 有数据需要迁移，暂时报错提示手动处理
+                raise RuntimeError(
+                    f"context_summaries 表结构不匹配且包含 {count} 条记录，需要手动迁移数据"
+                )
+
 
 # ---------- 设置 ----------
 
