@@ -1,11 +1,14 @@
 import { memo, useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { Check, Copy, Download, FileCode2 } from 'lucide-react'
 import { useStore } from '../../../store'
 import { ARTIFACT_LANGS, artifactTitle, versionIdOf } from '../../artifacts/artifactVersions'
+import 'katex/dist/katex.min.css'
 
 const MIN_ARTIFACT_LINES = 6
 
@@ -117,7 +120,11 @@ export const Markdown = memo(function Markdown({
 
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        components={components}
+      >
         {content}
       </ReactMarkdown>
     </div>

@@ -395,6 +395,25 @@
 .md a { color: var(--accent); }
 .md img { max-width: 100%; border-radius: 8px; }
 
+/* KaTeX 数学公式间距 */
+.md .katex-display {
+  margin: 1.5em 0 !important;
+  line-height: 2.5;
+  font-size: 1.2em;
+}
+.md .katex {
+  font-size: 1.15em;
+  line-height: 2.2;
+}
+/* 上下标字号缩小 */
+.md .katex .sizing,
+.md .katex .fontsize-ensurer,
+.md .katex .sizing.reset-size6.size3,
+.md .katex sup,
+.md .katex sub {
+  font-size: 0.7em !important;
+}
+
 /* 代码块 */
 .code-block {
   margin: 0.8em 0;
