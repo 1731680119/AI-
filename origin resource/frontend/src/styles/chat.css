@@ -395,23 +395,54 @@
 .md a { color: var(--accent); }
 .md img { max-width: 100%; border-radius: 8px; }
 
-/* KaTeX 数学公式间距 */
+/* ============ 数学公式（KaTeX） ============
+ * 采用 DeepSeek 聊天端常见的排版：行内公式与正文自然衔接，独立公式
+ * 单独成行并居中。分数、上下标等细节交给 KaTeX 默认规则，避免人为
+ * 拉伸内部行高造成公式松散或上下裁切。
+ */
+.md .katex {
+  color: inherit;
+  font-size: 1.08em;
+  line-height: 1.2;
+}
 .md .katex-display {
-  margin: 1.5em 0 !important;
-  line-height: 2.5;
+  display: block;
+  margin: 1em 0 !important;
+  padding: 0.2em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+  line-height: 1.4;
   font-size: 1.2em;
 }
-.md .katex {
-  font-size: 1.15em;
-  line-height: 2.2;
+.md .katex-display > .katex {
+  font-size: 1em;
 }
-/* 上下标字号缩小 */
-.md .katex .sizing,
-.md .katex .fontsize-ensurer,
-.md .katex .sizing.reset-size6.size3,
-.md .katex sup,
-.md .katex sub {
-  font-size: 0.7em !important;
+/* 分数的分子、分母需要留出可辨认的垂直间距。KaTeX 用绝对定位的
+ * vlist 排版，直接改 line-height 不会移动两行，因此只对两行做小幅位移，
+ * 再给分数整体补一点上下空间。 */
+.md .katex .mfrac {
+  padding: 0.14em 0;
+}
+.md .katex .mfrac > .vlist-t > .vlist-r > .vlist > span:first-child {
+  transform: translateY(0.1em);
+}
+.md .katex .mfrac > .vlist-t > .vlist-r > .vlist > span:nth-child(3) {
+  transform: translateY(-0.1em);
+}
+/* 让上下标比正文略大，并拉开上下标之间的距离；只作用于 KaTeX 的
+ * msupsub，不改变分数内部的 size3 字体。 */
+.md .katex .msupsub .katex-sizing {
+  font-size: 0.78em !important;
+}
+.md .katex .msupsub .vlist-t:not(.vlist-t2) > .vlist-r > .vlist > span {
+  transform: translateY(-0.08em);
+}
+.md .katex .msupsub .vlist-t2 > .vlist-r:first-child > .vlist > span:first-child {
+  transform: translateY(0.08em);
+}
+.md .katex .msupsub .vlist-t2 > .vlist-r:first-child > .vlist > span:nth-child(2) {
+  transform: translateY(-0.08em);
 }
 
 /* 代码块 */
