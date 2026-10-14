@@ -57,6 +57,7 @@ hiddenimports = [
     "PIL.PngImagePlugin",
     "pillow_heif",
     "image_export",
+    "image_search",
     "multipart",
     "python_multipart",
     "sqlite3",

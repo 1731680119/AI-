@@ -16,6 +16,15 @@ export interface Attachment {
 export interface SearchSource {
   url: string
   host: string
+  title?: string
+  date?: string
+}
+
+export interface SearchImage {
+  url: string
+  thumbnail: string
+  source_url: string
+  title: string
 }
 
 /** 工具执行过程中的一步，用于在气泡里显示「正在搜索…／正在阅读…」。 */
@@ -48,6 +57,7 @@ export interface ToolCall {
   display?: {
     text?: string
     sources?: SearchSource[]
+    images?: SearchImage[]
     usage?: Record<string, number>
     /** 长期记忆：内容与已有记忆重复，没有新写入。 */
     duplicate?: boolean
@@ -162,6 +172,7 @@ export interface SearchProvider {
   id: string
   /** 显示用的名字，例如「DeepSeek 官方」「某中转站」。 */
   name: string
+  protocol?: 'deepseek' | 'qwen' | 'kimi' | 'glm' | ''
   base_url: string
   api_key: string
   model: string

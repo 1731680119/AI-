@@ -1,4 +1,4 @@
-"""联网搜索：把 DeepSeek Responses API 的服务端内置 web_search 包装成一个工具。
+"""联网搜索适配层。
 
 为什么单独走一个上游：主对话模型（Claude 等）通过 /chat/completions 调用，
 只能声明「客户端自己执行」的 function 工具；而 DeepSeek 的 web_search 是
@@ -22,6 +22,7 @@ DeepSeek 的实测行为（与官方文档有出入的部分）：
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 from typing import Generator
@@ -105,10 +106,22 @@ def normalize_provider(provider: dict) -> dict:
         budget = int(provider.get("max_output_tokens") or DEFAULT_MAX_OUTPUT_TOKENS)
     except (TypeError, ValueError):
         budget = DEFAULT_MAX_OUTPUT_TOKENS
+    base_url = (str(provider.get("base_url") or "").strip() or DEFAULT_BASE_URL)
+    name = str(provider.get("name") or "未命名配置")
+    protocol = str(provider.get("protocol") or "").strip().lower()
+    if protocol not in {"deepseek", "qwen", "kimi", "glm"}:
+        probe = f"{name} {base_url}".lower()
+        protocol = (
+            "qwen" if any(x in probe for x in ("qwen", "千问", "dashscope", "aliyun")) else
+            "kimi" if any(x in probe for x in ("kimi", "moonshot")) else
+            "glm" if any(x in probe for x in ("glm", "智谱", "bigmodel")) else
+            "deepseek"
+        )
     return {
         "id": str(provider.get("id") or ""),
-        "name": str(provider.get("name") or "未命名配置"),
-        "base_url": (str(provider.get("base_url") or "").strip() or DEFAULT_BASE_URL),
+        "name": name,
+        "protocol": protocol,
+        "base_url": base_url,
         "api_key": str(provider.get("api_key") or "").strip(),
         "model": (str(provider.get("model") or "").strip() or DEFAULT_MODEL),
         "max_output_tokens": max(budget, 512),
@@ -124,6 +137,11 @@ def is_configured(settings: dict) -> bool:
     if not settings.get("tools_enabled", True):
         return False
     return bool(active_provider(settings)["api_key"])
+
+
+def protocol(provider: dict) -> str:
+    """返回官方搜索协议；旧配置没有 protocol 时按地址和名称推断。"""
+    return normalize_provider(provider)["protocol"]
 
 
 def strip_call_fragment(url: str) -> str:
@@ -177,6 +195,8 @@ def endpoint_candidates(base_url: str) -> list[str]:
 def _ordered_candidates(provider: dict) -> list[str]:
     """把上次成功的地址排到最前面，其余保持原顺序。"""
     candidates = endpoint_candidates(provider.get("base_url"))
+    if protocol(provider) == "qwen":
+        candidates.sort(key=lambda url: "/v1/responses" not in url)
     cached = _ENDPOINT_CACHE.get(provider.get("base_url") or "")
     if cached and cached in candidates:
         return [cached] + [url for url in candidates if url != cached]
@@ -199,15 +219,19 @@ def _request_body(provider: dict, query: str, stream: bool) -> dict:
 
 def _post_to(url: str, provider: dict, body: dict, timeout: int):
     payload = json.dumps(body, ensure_ascii=False).encode("utf8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {provider['api_key']}",
+        "User-Agent": _USER_AGENT,
+        "Accept": "text/event-stream, application/json",
+    }
+    if protocol(provider) == "qwen":
+        # DashScope 原生流式接口需要这个请求头；缺少时部分地域会退回普通正文。
+        headers["X-DashScope-SSE"] = "enable"
     request = urllib.request.Request(
         url,
         data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {provider['api_key']}",
-            "User-Agent": _USER_AGENT,
-            "Accept": "text/event-stream, application/json",
-        },
+        headers=headers,
     )
     return urllib.request.urlopen(request, timeout=timeout)
 
@@ -296,6 +320,271 @@ def _collect_sources(pages: list[str]) -> list[dict]:
     return sources
 
 
+def _source_rows(rows: list[dict]) -> list[dict]:
+    """只接受接口给出的 HTTP(S) 来源，保留标题；不从模型正文猜来源。"""
+    sources = []
+    seen = set()
+    for row in rows:
+        if isinstance(row, str):
+            citation = {"url": row}
+        elif isinstance(row, dict):
+            citation = row.get("url_citation") or row
+        else:
+            continue
+        url = strip_call_fragment(str(citation.get("url") or citation.get("link") or ""))
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or url in seen:
+            continue
+        seen.add(url)
+        sources.append({"url": url, "host": parsed.netloc,
+                        "title": str(citation.get("title") or ""),
+                        "date": str(citation.get("date") or citation.get("publish_date") or "")})
+    return sources
+
+
+def _response_sources(item: dict) -> list[dict]:
+    rows = list((item.get("action") or {}).get("sources") or [])
+    for part in item.get("content") or []:
+        if isinstance(part, dict):
+            rows.extend(part.get("annotations") or [])
+    return rows
+
+
+def _json_endpoint(provider: dict, suffix: str) -> str:
+    base = provider["base_url"].rstrip("/")
+    if base.endswith(suffix):
+        return base
+    for tail in ("/chat/completions", "/responses", "/tools/search", "/tools/search_pro", "/web_search"):
+        if base.endswith(tail):
+            base = base[:-len(tail)]
+            break
+    if protocol(provider) == "kimi" and not base.endswith("/v1"):
+        base += "/v1"
+    if protocol(provider) == "glm" and urllib.parse.urlsplit(base).path in {"", "/", "/api"}:
+        base = base.rstrip("/") + ("/paas/v4" if base.endswith("/api") else "/api/paas/v4")
+    return base + suffix
+
+
+def _dashscope_endpoint(provider: dict) -> str:
+    """按模型类型返回 DashScope 文本或多模态 Generation API 地址。"""
+    base = provider["base_url"].rstrip("/")
+    service_tails = (
+        "/services/aigc/text-generation/generation",
+        "/services/aigc/multimodal-generation/generation",
+    )
+    for service_tail in service_tails:
+        if base.endswith(service_tail):
+            base = base[:-len(service_tail)]
+            break
+    for tail in ("/chat/completions", "/responses", "/compatible-mode/v1", "/compatible-mode", "/api/v1", "/v1"):
+        if base.endswith(tail):
+            base = base[:-len(tail)]
+            break
+    return base + "/api/v1" + _dashscope_service_tail(provider)
+
+
+def _dashscope_is_multimodal(provider: dict) -> bool:
+    model = str(provider.get("model") or "").lower().replace("_", "-")
+    return any(marker in model for marker in ("qwen3.5", "qwen3.6", "qwen3.7", "qwen3.8"))
+
+
+def _dashscope_service_tail(provider: dict) -> str:
+    kind = "multimodal-generation" if _dashscope_is_multimodal(provider) else "text-generation"
+    return f"/services/aigc/{kind}/generation"
+
+
+def _dashscope_host_supported(provider: dict) -> bool:
+    host = (urllib.parse.urlsplit(provider["base_url"]).hostname or "").lower()
+    return host == "dashscope.aliyuncs.com" or host.endswith(".maas.aliyuncs.com")
+
+
+def _dashscope_body(provider: dict, query: str) -> dict:
+    multimodal = _dashscope_is_multimodal(provider)
+    instruction = (
+        "你是检索助手。使用联网搜索核实信息，然后用中文简洁作答。"
+        "必须在末尾列出引用页面的标题与完整 URL，不要编造来源。\n\n"
+    )
+    search_strategy = "agent" if "omni" in str(provider.get("model") or "").lower() else "max"
+    return {
+        "model": provider["model"],
+        "input": {"messages": [
+            {"role": "user", "content": (
+                [{"text": instruction + query}] if multimodal else instruction + query
+            )},
+        ]},
+        "parameters": {
+            "enable_search": True,
+            "search_options": {
+                "forced_search": True,
+                "search_strategy": search_strategy,
+                "enable_source": True,
+            },
+            "result_format": "message",
+            "stream": True,
+            "incremental_output": True,
+        },
+    }
+
+
+def _dashscope_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+        return "".join(parts)
+    return ""
+
+
+def _iter_dashscope(response) -> Generator[dict, None, None]:
+    """解析 DashScope 兼容模式的 data:{output:...} SSE。"""
+    for raw in response:
+        line = raw.decode("utf8", "replace").strip()
+        chunk = line[5:].strip() if line.startswith("data:") else line
+        if not chunk or chunk == "[DONE]":
+            continue
+        try:
+            payload = json.loads(chunk)
+        except json.JSONDecodeError:
+            continue
+        yield payload
+
+
+def _dashscope_search_rows(payload: dict) -> list[dict]:
+    """兼容 DashScope 不同版本把 search_info 放在 output 或 message 的情况。"""
+    rows: list[dict] = []
+    output = payload.get("output") or {}
+    for container in (
+        payload,
+        output,
+        payload.get("message") or {},
+        output.get("message") or {},
+    ):
+        if isinstance(container, dict):
+            info = container.get("search_info") or {}
+            if isinstance(info, dict):
+                rows.extend(info.get("search_results") or [])
+    for choice in (output.get("choices") or payload.get("choices") or []):
+        if not isinstance(choice, dict):
+            continue
+        for container in (choice, choice.get("message") or {}, choice.get("delta") or {}):
+            if isinstance(container, dict):
+                info = container.get("search_info") or {}
+                if isinstance(info, dict):
+                    rows.extend(info.get("search_results") or [])
+    return rows
+
+
+def _search_dashscope(provider: dict, query: str, timeout: int):
+    """调用千问 DashScope 原生文本或多模态 Generation API 联网搜索。"""
+    endpoint = _dashscope_endpoint(provider)
+    yield {"type": "progress", "action": "search", "queries": [query], "url": ""}
+    if not _dashscope_host_supported(provider):
+        yield {
+            "type": "error",
+            "status": 0,
+            "message": (
+                "此 Base URL 不是阿里云 DashScope 原生 API 域名，无法通过它调用联网搜索。"
+                "请在阿里云百炼控制台复制当前地域的业务空间 Base URL，例如 "
+                "https://<业务空间ID>.cn-beijing.maas.aliyuncs.com/api/v1，"
+                "再把协议设为“千问 DashScope”。OpenAI 兼容中转站不提供 DashScope 原生搜索来源。"
+            ),
+        }
+        return
+    try:
+        response = _post_to(endpoint, provider, _dashscope_body(provider, query), timeout)
+    except urllib.error.HTTPError as error:
+        detail = error.read(2048).decode("utf8", "replace")
+        yield {"type": "error", "message": f"DashScope 搜索接口 HTTP {error.code}：{detail}", "status": error.code}
+        return
+    except Exception as error:
+        yield {"type": "error", "message": str(error), "status": 0}
+        return
+
+    text_parts: list[str] = []
+    rows: list[dict] = []
+    usage: dict[str, Any] = {}
+    try:
+        for payload in _iter_dashscope(response):
+            output = payload.get("output") or {}
+            choices = output.get("choices") or payload.get("choices") or []
+            if choices:
+                choice = choices[0] or {}
+                message = choice.get("message") or {}
+                delta = choice.get("delta") or {}
+                text_parts.append(_dashscope_text(
+                    message.get("content") or delta.get("content") or choice.get("text")
+                ))
+            rows.extend(_dashscope_search_rows(payload))
+            usage = payload.get("usage") or usage
+    finally:
+        response.close()
+
+    sources = _source_rows(rows)
+    text = "".join(text_parts).strip()
+    if not sources:
+        yield {"type": "error", "message": "DashScope 已返回内容，但没有返回可验证的搜索来源", "status": 0}
+        return
+    if not text:
+        text = "\n\n".join(
+            f"标题：{row.get('title') or row.get('url') or row.get('link')}\n"
+            f"链接：{row.get('url') or row.get('link')}\n"
+            f"内容：{row.get('snippet') or row.get('content') or ''}"
+            for row in rows if row.get("url") or row.get("link")
+        )
+    yield {
+        "type": "result", "text": text[:provider["max_output_tokens"] * 3],
+        "sources": sources, "usage": usage, "endpoint": endpoint,
+        "tool_calls": 1, "search_verified": True,
+    }
+
+
+def _search_structured(provider: dict, query: str, timeout: int):
+    kind = protocol(provider)
+    yield {"type": "progress", "action": "search", "queries": [query], "url": ""}
+    if kind == "kimi":
+        endpoint = _json_endpoint(provider, "/tools/search")
+        body = {"text_query": query, "limit": 6, "include_content": True,
+                "timeout_seconds": min(timeout, 60)}
+    else:
+        endpoint = _json_endpoint(provider, "/web_search")
+        if len(query) > 70:
+            yield {"type": "error", "message": "GLM 搜索词最多 70 个字符，请缩短查询后重试", "status": 0}
+            return
+        body = {"search_query": query, "search_engine": "search_pro", "search_intent": False,
+                "count": 6, "content_size": "high"}
+    try:
+        with _post_to(endpoint, provider, body, timeout) as response:
+            payload = json.load(response)
+        if payload.get("error"):
+            raise ValueError(str(payload["error"].get("message") or payload["error"]))
+        rows = payload.get("search_results" if kind == "kimi" else "search_result") or []
+        sources = _source_rows(rows)
+        if not sources:
+            yield {"type": "error", "message": "搜索接口未返回网页结果，请更换查询词", "status": 0}
+            return
+        blocks = []
+        for row in rows:
+            url = row.get("url") or row.get("link") or ""
+            if url not in {s["url"] for s in sources}:
+                continue
+            text = row.get("text") or row.get("content") or row.get("snippet") or ""
+            blocks.append(f"标题：{row.get('title') or url}\n链接：{url}\n内容：{text[:3500]}")
+        # 搜索正文属于不可信网页数据，主模型应只把它作为资料。
+        text = "\n\n".join(blocks)[:provider["max_output_tokens"] * 3]
+        yield {"type": "result", "text": text, "sources": sources, "usage": {},
+               "endpoint": endpoint, "tool_calls": 1, "search_verified": True}
+    except urllib.error.HTTPError as error:
+        detail = error.read(2048).decode("utf8", "replace")
+        yield {"type": "error", "message": f"搜索接口 HTTP {error.code}：{detail}", "status": error.code}
+    except Exception as error:
+        yield {"type": "error", "message": str(error), "status": 0}
+
+
 def _iter_sse(response) -> Generator[dict, None, None]:
     """解析 Responses 的语义化事件流。
 
@@ -321,7 +610,7 @@ def _iter_sse(response) -> Generator[dict, None, None]:
             yield payload
 
 
-def search(
+def _search_responses(
     provider: dict, query: str, timeout: int = REQUEST_TIMEOUT_SECONDS
 ) -> Generator[dict, None, None]:
     """执行一次联网搜索，边跑边产出进度事件，最后产出结果。
@@ -365,6 +654,7 @@ def search(
     # 只在一个 delta 都没收到时才用它兜底，避免和正常流式重复计一遍。
     done_parts: list[str] = []
     pages: list[str] = []
+    source_rows: list[dict] = []
     usage: dict[str, Any] = {}
     call_count = 0
     failure = ""
@@ -382,6 +672,7 @@ def search(
 
             elif kind == "response.output_item.done":
                 item = event.get("item") or {}
+                source_rows.extend(_response_sources(item))
                 if item.get("type") == "web_search_call":
                     call_count += 1
                     described = _describe_action(item.get("action") or {})
@@ -406,6 +697,10 @@ def search(
                     )
                 # 兜底：流式漏收 open_page 时，从最终 response 的 output 里补齐来源。
                 for item in payload.get("output") or []:
+                    source_rows.extend(_response_sources(item))
+                    if item.get("type") == "message" and not text_parts and not done_parts:
+                        done_parts.extend(part.get("text") or "" for part in item.get("content") or []
+                                          if part.get("type") == "output_text")
                     if item.get("type") != "web_search_call":
                         continue
                     described = _describe_action(item.get("action") or {})
@@ -421,13 +716,15 @@ def search(
             yield {"type": "error", "message": str(error), "status": 0}
             return
         failure = ""
+    finally:
+        response.close()
 
     if failure:
         yield {"type": "error", "message": failure, "status": 0}
         return
 
     text = "".join(text_parts).strip() or "".join(done_parts).strip()
-    sources = _collect_sources(pages)
+    sources = _source_rows(source_rows + [{"url": url} for url in pages])
     diag.log_event(
         "INFO", "backend", "联网搜索完成", logger="backend.web_search",
         result_chars=len(text), source_count=len(sources), tool_calls=call_count,
@@ -456,7 +753,34 @@ def search(
         "usage": usage,
         "endpoint": endpoint,
         "tool_calls": call_count,
+        "search_verified": bool(call_count or source_rows),
     }
+
+
+def search(provider: dict, query: str, timeout: int = REQUEST_TIMEOUT_SECONDS):
+    """按配置选择官方协议，DeepSeek 官方不再提供内置搜索，禁止误报成功。"""
+    provider = normalize_provider(provider)
+    kind = protocol(provider)
+    if kind == "deepseek" and urllib.parse.urlsplit(provider["base_url"]).hostname == "api.deepseek.com":
+        yield {"type": "error", "status": 0, "message": (
+            "DeepSeek 官方当前不支持内置联网搜索（Responses 的 web_search 会被忽略）。"
+            "请在联网搜索设置中选择千问、Kimi 或 GLM 搜索服务；聊天仍可使用 DeepSeek。"
+        )}
+        return
+    if kind == "qwen":
+        yield from _search_dashscope(provider, query, timeout)
+        return
+    if kind in {"kimi", "glm"}:
+        yield from _search_structured(provider, query, timeout)
+        return
+    for event in _search_responses(provider, query, timeout):
+        if event["type"] == "result" and (not event.get("search_verified") or not event.get("sources")):
+            yield {"type": "error", "status": 0, "message": (
+                "上游返回了文字，但没有可验证的搜索结果与来源，无法确认真正联网。"
+                "请检查模型是否支持搜索、协议选择及中转站的搜索转发能力。"
+            )}
+        else:
+            yield event
 
 
 def test_provider(provider: dict) -> dict:

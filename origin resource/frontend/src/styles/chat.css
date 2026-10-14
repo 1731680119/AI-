@@ -233,6 +233,22 @@
 }
 .tool-sources a:hover { color: var(--accent); text-decoration: underline; }
 .tool-source-icon { flex-shrink: 0; opacity: .6; }
+.tool-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 8px 0 12px;
+}
+.tool-image-card { margin: 0; min-width: 0; }
+.tool-image-card > a { display: block; height: 120px; background: var(--bg-hover); border-radius: 7px; overflow: hidden; }
+.tool-image-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tool-image-failed { display: grid; place-items: center; height: 100%; color: var(--text-muted); font-size: 12px; }
+.tool-image-card figcaption { display: flex; gap: 6px; align-items: center; margin-top: 5px; font-size: 11px; }
+.tool-image-card figcaption span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+.tool-image-card figcaption a { flex-shrink: 0; color: var(--accent); text-decoration: none; }
+.tool-image-results { margin: 8px 0; }
+.tool-image-results summary { cursor: pointer; color: var(--text-muted); font-size: 12px; }
+.md-image-failed { display: inline-flex; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); font-size: 12px; }
 /* 记忆正文只有一句，直接平铺在卡片里。 */
 .tool-memory {
   color: var(--text-secondary);

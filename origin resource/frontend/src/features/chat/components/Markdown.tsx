@@ -28,6 +28,12 @@ function CopyButton({ text }: { text: string }) {
   )
 }
 
+function RemoteImage({ src, alt }: { src?: string; alt?: string }) {
+  const [failed, setFailed] = useState(false)
+  if (!src || failed) return <span className="md-image-failed">图片加载失败{alt ? `：${alt}` : ''}</span>
+  return <img src={src} alt={alt || ''} loading="lazy" onError={() => setFailed(true)} />
+}
+
 function CodeBlock({ language, code, versionId }: { language: string; code: string; versionId?: string }) {
   const theme = useStore((s) => s.settings?.theme)
   const setArtifact = useStore((s) => s.setArtifact)
@@ -112,6 +118,9 @@ export const Markdown = memo(function Markdown({
       // pre 直接透传，避免嵌套 pre
       pre({ children }: { children?: React.ReactNode }) {
         return <>{children}</>
+      },
+      img({ src, alt }: React.ImgHTMLAttributes<HTMLImageElement>) {
+        return <RemoteImage src={src} alt={alt} />
       },
     }),
     // 版本号要按最新正文算，正文变了这份 components 必须重建。

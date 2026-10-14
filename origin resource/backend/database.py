@@ -218,6 +218,7 @@ DEFAULT_SEARCH_PROVIDERS = [
     {
         "id": "default",
         "name": "DeepSeek 官方",
+        "protocol": "deepseek",
         "base_url": "https://api.deepseek.com",
         "api_key": "",
         "model": "deepseek-v4-flash",
@@ -395,6 +396,7 @@ def _normalize_search_providers(stored) -> list[dict]:
         result.append({
             "id": pid,
             "name": str(item.get("name") or "未命名配置"),
+            "protocol": str(item.get("protocol") or ""),
             "base_url": str(item.get("base_url") or ""),
             "api_key": str(item.get("api_key") or ""),
             "model": str(item.get("model") or ""),

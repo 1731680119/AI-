@@ -2,10 +2,11 @@ import { useState } from 'react'
 import {
   AlertCircle, Brain, ChevronDown, ExternalLink, Globe, Loader2, Search, Terminal,
 } from 'lucide-react'
-import type { ToolCall } from '../../../types'
+import type { SearchImage, ToolCall } from '../../../types'
 
 const TOOL_LABELS: Record<string, string> = {
   web_search: '联网搜索',
+  image_search: '图片搜索',
   remember: '长期记忆',
   run_code: '运行代码',
 }
@@ -83,6 +84,30 @@ function CodeExecBody({ call }: { call: ToolCall }) {
   )
 }
 
+function ToolImageCard({ image }: { image: SearchImage }) {
+  const [failed, setFailed] = useState(false)
+  const [src, setSrc] = useState(image.thumbnail || image.url)
+  return (
+    <figure className="tool-image-card">
+      <a href={image.url} target="_blank" rel="noreferrer noopener">
+        {failed ? (
+          <span className="tool-image-failed">图片加载失败</span>
+        ) : (
+          <img src={src} alt={image.title} loading="lazy"
+            onError={() => {
+              if (src !== image.url) setSrc(image.url)
+              else setFailed(true)
+            }} />
+        )}
+      </a>
+      <figcaption>
+        <span title={image.title}>{image.title}</span>
+        <a href={image.source_url} target="_blank" rel="noreferrer noopener">查看来源</a>
+      </figcaption>
+    </figure>
+  )
+}
+
 export function ToolCallBlock({ call }: { call: ToolCall }) {
   const isCode = call.tool === 'run_code'
   // 代码执行默认展开：跑了什么、出了什么，是这类调用里最该被看到的部分。
@@ -91,6 +116,7 @@ export function ToolCallBlock({ call }: { call: ToolCall }) {
   const sources = call.display?.sources || []
   const query = typeof call.arguments.query === 'string' ? call.arguments.query : ''
   const isMemory = call.tool === 'remember'
+  const images = call.display?.images || []
 
   return (
     <div className={`tool-block${call.error ? ' failed' : ''}`}>
@@ -115,6 +141,15 @@ export function ToolCallBlock({ call }: { call: ToolCall }) {
           {call.error && <div className="tool-error">{call.error}</div>}
 
           {isCode && <CodeExecBody call={call} />}
+
+          {images.length > 0 && (
+            <details className="tool-image-results">
+              <summary>查看 {images.length} 张图片搜索结果</summary>
+              <div className="tool-images">
+                {images.map((image) => <ToolImageCard key={image.url} image={image} />)}
+              </div>
+            </details>
+          )}
 
           {sources.length > 0 && (
             <ul className="tool-sources">

@@ -213,6 +213,7 @@ export function SettingsModal() {
         {
           id,
           name: '新搜索配置',
+          protocol: '',
           base_url: '',
           api_key: '',
           model: 'deepseek-v4-flash',
@@ -630,10 +631,26 @@ export function SettingsModal() {
 
                         <div className="field-row">
                           <div className="field">
+                            <label>搜索协议</label>
+                            <select
+                              value={p.protocol || ''}
+                              disabled={!draft.tools_enabled}
+                              onChange={(e) => patchProvider(p.id, { protocol: e.target.value as SearchProvider['protocol'] })}
+                            >
+                              <option value="">自动识别</option>
+                              <option value="qwen">千问 DashScope</option>
+                              <option value="kimi">Kimi（Moonshot）</option>
+                              <option value="glm">GLM（智谱）</option>
+                              <option value="deepseek">DeepSeek Responses</option>
+                            </select>
+                          </div>
+                          <div className="field">
                             <label>API 地址（Base URL）</label>
                             <input
                               value={p.base_url}
-                              placeholder="https://api.deepseek.com"
+                              placeholder={p.protocol === 'qwen'
+                                ? 'https://<业务空间ID>.cn-beijing.maas.aliyuncs.com/api/v1'
+                                : 'https://api.deepseek.com'}
                               disabled={!draft.tools_enabled}
                               onChange={(e) => patchProvider(p.id, { base_url: e.target.value })}
                             />
@@ -728,8 +745,8 @@ export function SettingsModal() {
                 </div>
                 <div className="hint">
                   搜索走独立上游，与聊天接口无关，只有选中（左侧圆点）的那一套会被使用，
-                  失败时不会自动切到别的配置。目前只有 DeepSeek 的 Responses 接口内置搜索，
-                  中转站需要它自己也支持转发这个接口。地址带不带 /v1 都行，后端会自动试。
+                  失败时不会自动切到别的配置。千问使用 DashScope 原生搜索，Base URL 必须使用阿里云百炼业务空间地址（域名为 .maas.aliyuncs.com）；兼容中转站不支持返回搜索来源。Kimi、GLM 使用各自官方搜索接口；
+                  DeepSeek 官方 Responses 当前不会执行内置搜索。协议可自动识别，地址带不带 /v1 都行。
                 </div>
               </div>
               <div className="hint">

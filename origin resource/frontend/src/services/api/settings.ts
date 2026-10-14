@@ -26,6 +26,7 @@ export function testSearchProvider(provider: SearchProvider): Promise<SearchTest
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       name: provider.name,
+      protocol: provider.protocol,
       base_url: provider.base_url,
       api_key: provider.api_key,
       model: provider.model,

@@ -110,6 +110,7 @@ class SearchProviderTest(BaseModel):
     """
 
     name: str | None = None
+    protocol: str | None = None
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
