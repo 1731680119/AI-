@@ -16,6 +16,8 @@ export interface ModelSource {
   name: string
   baseUrl: string
   resolveKey: () => Promise<string>
+  protocol?: string
+  apiType?: string
 }
 
 interface Props {
@@ -44,6 +46,7 @@ export function ModelPicker({
   const [sourceId, setSourceId] = useState(sources[0]?.id || '')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [models, setModels] = useState<string[]>([])
   const [endpoint, setEndpoint] = useState('')
   const [keyword, setKeyword] = useState('')
@@ -58,14 +61,16 @@ export function ModelPicker({
     if (!source) return
     setLoading(true)
     setError('')
+    setNotice('')
     setModels([])
     setTested({})
     try {
       const apiKey = await source.resolveKey()
-      const result = await listRemoteModels(source.baseUrl, apiKey)
+      const result = await listRemoteModels(source.baseUrl, apiKey, source.protocol, source.apiType)
       setModels(result.models || [])
       setEndpoint(result.endpoint || '')
       if (!result.ok) setError(result.message)
+      else if (source.protocol === 'qwen') setNotice(result.message)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -153,6 +158,7 @@ export function ModelPicker({
 
       {!loading && !error && (
         <>
+          {notice && <div className="model-picker-msg">{notice}</div>}
           <div className="model-picker-list">
             {shown.map((name) => {
               const result = tested[name]

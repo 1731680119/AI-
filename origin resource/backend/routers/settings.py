@@ -114,6 +114,8 @@ class SearchProviderTest(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
+    api_type: str | None = None
+    search_strategy: str | None = None
     max_output_tokens: int | None = None
 
     model_config = {"extra": "ignore"}
@@ -152,6 +154,8 @@ class ModelProbeRequest(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
+    protocol: str | None = None
+    api_type: str | None = None
 
     model_config = {"extra": "ignore"}
 
@@ -161,6 +165,7 @@ async def list_remote_models(request: ModelProbeRequest):
     """问上游要一份模型清单，供设置页勾选。只读清单，不产生调用费用。"""
     return await asyncio.to_thread(
         model_probe.list_models, request.base_url or "", request.api_key or "",
+        request.protocol or "", request.api_type or "auto",
     )
 
 

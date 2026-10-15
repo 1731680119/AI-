@@ -1,0 +1,25 @@
+{
+  "verified_on": "2026-10-15",
+  "docs": ["https://help.aliyun.com/zh/model-studio/web-search", "https://help.aliyun.com/zh/model-studio/web-extractor"],
+  "providers": {
+    "qwen": {"base_url": "https://dashscope.aliyuncs.com/api/v1", "hosts": ["dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com", "dashscope-us.aliyuncs.com"], "host_suffixes": [".maas.aliyuncs.com"], "keywords": ["qwen", "千问", "dashscope", "aliyun"]},
+    "kimi": {"base_url": "https://api.moonshot.cn/v1", "hosts": ["api.moonshot.cn", "api.moonshot.ai", "api.kimi.com"], "host_suffixes": [], "keywords": ["kimi", "moonshot"], "docs": ["https://platform.kimi.com/docs/api/tools-search", "https://platform.kimi.com/docs/api/tools-search-pro", "https://platform.kimi.com/docs/guide/use-web-search"], "result_key": "search_results", "timeout_max": 60, "limit": 6},
+    "glm": {"base_url": "https://open.bigmodel.cn/api/paas/v4", "hosts": ["open.bigmodel.cn", "api.z.ai"], "host_suffixes": [], "keywords": ["glm", "智谱", "bigmodel", "z.ai"], "docs": ["https://docs.bigmodel.cn/api-reference/工具-api/网络搜索", "https://docs.z.ai/api-reference/tools/web-search"], "result_key": "search_result", "domestic": {"engine": "search_pro", "query_max": 70}, "international": {"hosts": ["api.z.ai"], "engine": "search-prime"}},
+    "deepseek": {"base_url": "https://api.deepseek.com", "hosts": ["api.deepseek.com"], "host_suffixes": [], "keywords": ["deepseek"], "official_search": false, "docs": ["https://api-docs.deepseek.com/guides/responses_api"]}
+  },
+  "rules": [
+    {"pattern": "^qwen3\\.8-omni-flash(?:-latest|-\\d{4}-\\d{2}-\\d{2})?$", "models": ["qwen3.8-omni-flash"], "multimodal": true, "strategies": ["agent"], "responses": true},
+    {"pattern": "^qwen3\\.5-omni-(?:plus|flash)(?:-latest|-2026-03-15)?$", "models": ["qwen3.5-omni-plus", "qwen3.5-omni-flash", "qwen3.5-omni-plus-2026-03-15", "qwen3.5-omni-flash-2026-03-15"], "multimodal": true, "strategies": ["agent"], "responses": false},
+    {"pattern": "^qwen3\\.8-(?:max|flash|2\\.4t-a95b|27b)(?:-latest|-0902|-\\d{4}-\\d{2}-\\d{2})?$", "models": ["qwen3.8-max", "qwen3.8-max-0902", "qwen3.8-flash", "qwen3.8-2.4t-a95b", "qwen3.8-27b"], "multimodal": true, "strategies": ["turbo", "max"], "responses": true},
+    {"pattern": "^qwen3\\.7-max(?:-preview|-latest|-\\d{4}-\\d{2}-\\d{2})?$", "models": ["qwen3.7-max", "qwen3.7-max-preview"], "multimodal": false, "strategies": ["turbo", "max", "agent"], "responses": true, "min_snapshot": "2026-05-17"},
+    {"pattern": "^qwen3\\.7-(?:plus|flash)(?:-latest|-\\d{4}-\\d{2}-\\d{2})?$", "models": ["qwen3.7-plus", "qwen3.7-flash"], "multimodal": true, "strategies": ["turbo", "max", "agent"], "responses": true, "min_snapshots": {"plus": "2026-05-26", "flash": "2026-07-15"}},
+    {"pattern": "^qwen3\\.6-(?:plus|flash|27b|35b-a3b)(?:-latest|-\\d{4}-\\d{2}-\\d{2})?$", "models": ["qwen3.6-plus", "qwen3.6-flash", "qwen3.6-27b", "qwen3.6-35b-a3b"], "multimodal": true, "strategies": ["turbo", "max", "agent"], "responses": true, "no_responses": ["qwen3.6-27b"], "min_snapshots": {"plus": "2026-04-02", "flash": "2026-04-16"}},
+    {"pattern": "^qwen3\\.5-plus(?:-latest|-\\d{4}-\\d{2}-\\d{2})?$", "models": ["qwen3.5-plus"], "multimodal": true, "strategies": ["turbo", "max", "agent", "agent_max"], "responses": true, "min_snapshot": "2026-02-15"},
+    {"pattern": "^qwen3\\.5-(?:flash|27b|35b-a3b|122b-a10b|397b-a17b)(?:-latest|-\\d{4}-\\d{2}-\\d{2})?$", "models": ["qwen3.5-flash", "qwen3.5-27b", "qwen3.5-35b-a3b", "qwen3.5-122b-a10b", "qwen3.5-397b-a17b"], "multimodal": true, "strategies": ["turbo", "max", "agent"], "responses": true, "min_snapshot": "2026-02-23"},
+    {"pattern": "^qwen3-max(?:-preview|-latest|-\\d{4}-\\d{2}-\\d{2})?$", "models": ["qwen3-max", "qwen3-max-preview"], "multimodal": false, "strategies": ["turbo", "max", "agent_max"], "responses": false},
+    {"pattern": "^qwen-(?:max|plus|flash)(?:-latest|-\\d{4}-\\d{2}-\\d{2})?$", "models": ["qwen-max", "qwen-plus", "qwen-plus-latest", "qwen-flash"], "multimodal": false, "strategies": ["turbo", "max"], "responses": false, "min_snapshots": {"plus": "2025-07-14", "flash": "2025-07-28"}},
+    {"pattern": "^qwen-(?:plus|flash)-character(?:-2026-02-26)?$", "models": ["qwen-plus-character", "qwen-flash-character", "qwen-flash-character-2026-02-26"], "multimodal": false, "strategies": ["turbo", "max"], "responses": false},
+    {"pattern": "^deepseek-v4-(?:pro|pro-0813|flash-0731)$", "models": ["deepseek-v4-pro", "deepseek-v4-pro-0813", "deepseek-v4-flash-0731"], "multimodal": false, "strategies": ["turbo", "max"], "responses": true},
+    {"pattern": "^(?:glm-5\\.2|kimi-k3)$", "models": ["glm-5.2", "kimi-k3"], "multimodal": false, "strategies": [], "responses": true}
+  ]
+}

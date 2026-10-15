@@ -400,7 +400,9 @@ def _normalize_search_providers(stored) -> list[dict]:
             "base_url": str(item.get("base_url") or ""),
             "api_key": str(item.get("api_key") or ""),
             "model": str(item.get("model") or ""),
-            "max_output_tokens": max(budget, 512),
+            "api_type": str(item.get("api_type") or "auto"),
+            "search_strategy": str(item.get("search_strategy") or ""),
+            "max_output_tokens": min(max(budget, 512), 32000),
         })
     return result or [dict(p) for p in DEFAULT_SEARCH_PROVIDERS]
 

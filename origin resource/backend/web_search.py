@@ -1,23 +1,7 @@
-"""联网搜索适配层。
+"""独立联网搜索适配：千问原生/Responses、Kimi REST、智谱/Z.AI REST。
 
-为什么单独走一个上游：主对话模型（Claude 等）通过 /chat/completions 调用，
-只能声明「客户端自己执行」的 function 工具；而 DeepSeek 的 web_search 是
-服务端执行的内置工具，只挂在 /responses 上。因此这里把搜索做成旁路——
-主模型发出 web_search 调用，后端转手请求 DeepSeek 跑一趟，再把带来源的
-结果回填给主模型继续写。附带的好处是主对话仍可使用附件与图片，
-而 Responses 的输入不支持这些。
-
-DeepSeek 的实测行为（与官方文档有出入的部分）：
-  * annotations 恒为空数组，来源只以裸 URL 写在正文里，因此来源列表以
-    web_search_call 里 action.type == "open_page" 的 url 为准，那是模型
-    真正读过的页面。
-  * open_page 的 url 尾部会被追加 #ws_call_id=...，展示前需要剥掉。
-  * 一次问答可能产生十多个 web_search_call，输入 token 会涨到普通对话的
-    十几倍，所以调用方需要对轮次与预算设限。
-
-搜索配置可以存多套（官方直连 + 各家中转站），本模块只认一条扁平的 provider
-字典，由 active_provider() 从设置里挑出当前选中的那条；设置页的检测按钮则
-直接把未保存的草稿传进来跑 test_provider()。
+请求参数按供应商文档构造，检索必须返回真实来源；DeepSeek 官方会忽略
+web_search，故明确拒绝。中转 Responses 需通过来源验证，失败不切换供应商。
 """
 import json
 import re
@@ -28,6 +12,8 @@ from typing import Any
 from typing import Generator
 
 import logging_config as diag
+import model_probe
+import search_capabilities as capabilities
 
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
@@ -106,26 +92,26 @@ def normalize_provider(provider: dict) -> dict:
         budget = int(provider.get("max_output_tokens") or DEFAULT_MAX_OUTPUT_TOKENS)
     except (TypeError, ValueError):
         budget = DEFAULT_MAX_OUTPUT_TOKENS
-    base_url = (str(provider.get("base_url") or "").strip() or DEFAULT_BASE_URL)
+    protocol = capabilities.infer_protocol(provider)
+    base_url = (str(provider.get("base_url") or "").strip() or capabilities.CATALOG['providers'][protocol]['base_url'])
     name = str(provider.get("name") or "未命名配置")
-    protocol = str(provider.get("protocol") or "").strip().lower()
-    if protocol not in {"deepseek", "qwen", "kimi", "glm"}:
-        probe = f"{name} {base_url}".lower()
-        protocol = (
-            "qwen" if any(x in probe for x in ("qwen", "千问", "dashscope", "aliyun")) else
-            "kimi" if any(x in probe for x in ("kimi", "moonshot")) else
-            "glm" if any(x in probe for x in ("glm", "智谱", "bigmodel")) else
-            "deepseek"
-        )
-    return {
+    defaults = {"qwen": "qwen-plus", "kimi": "kimi", "glm": "search_pro"}
+    result = {
         "id": str(provider.get("id") or ""),
         "name": name,
         "protocol": protocol,
         "base_url": base_url,
         "api_key": str(provider.get("api_key") or "").strip(),
-        "model": (str(provider.get("model") or "").strip() or DEFAULT_MODEL),
-        "max_output_tokens": max(budget, 512),
+        "model": (str(provider.get("model") or "").strip() or defaults.get(protocol, DEFAULT_MODEL)),
+        "max_output_tokens": min(max(budget, 512), 32000),
+        "api_type": str(provider.get("api_type") or "auto"),
+        "search_strategy": str(provider.get("search_strategy") or ""),
     }
+    if protocol == "qwen":
+        if result['api_type'] != 'auto':
+            result['api_type'] = capabilities.resolve_api(result)
+        result['search_strategy'] = capabilities.resolve_strategy(result)
+    return result
 
 
 def is_configured(settings: dict) -> bool:
@@ -194,9 +180,9 @@ def endpoint_candidates(base_url: str) -> list[str]:
 
 def _ordered_candidates(provider: dict) -> list[str]:
     """把上次成功的地址排到最前面，其余保持原顺序。"""
-    candidates = endpoint_candidates(provider.get("base_url"))
     if protocol(provider) == "qwen":
-        candidates.sort(key=lambda url: "/v1/responses" not in url)
+        return [capabilities.endpoint(provider, 'responses')]
+    candidates = endpoint_candidates(provider.get("base_url"))
     cached = _ENDPOINT_CACHE.get(provider.get("base_url") or "")
     if cached and cached in candidates:
         return [cached] + [url for url in candidates if url != cached]
@@ -204,7 +190,7 @@ def _ordered_candidates(provider: dict) -> list[str]:
 
 
 def _request_body(provider: dict, query: str, stream: bool) -> dict:
-    return {
+    body = {
         "model": provider["model"],
         "instructions": (
             "你是检索助手。使用联网搜索核实信息，然后用中文简洁作答。"
@@ -215,6 +201,9 @@ def _request_body(provider: dict, query: str, stream: bool) -> dict:
         "max_output_tokens": provider["max_output_tokens"],
         "stream": stream,
     }
+    if protocol(provider) == 'qwen':
+        body['enable_thinking'] = True
+    return body
 
 
 def _post_to(url: str, provider: dict, body: dict, timeout: int):
@@ -225,7 +214,7 @@ def _post_to(url: str, provider: dict, body: dict, timeout: int):
         "User-Agent": _USER_AGENT,
         "Accept": "text/event-stream, application/json",
     }
-    if protocol(provider) == "qwen":
+    if protocol(provider) == "qwen" and capabilities.resolve_api(provider) == 'dashscope':
         # DashScope 原生流式接口需要这个请求头；缺少时部分地域会退回普通正文。
         headers["X-DashScope-SSE"] = "enable"
     request = urllib.request.Request(
@@ -233,7 +222,7 @@ def _post_to(url: str, provider: dict, body: dict, timeout: int):
         data=payload,
         headers=headers,
     )
-    return urllib.request.urlopen(request, timeout=timeout)
+    return model_probe._opener().open(request, timeout=timeout)
 
 
 def _post(provider: dict, body: dict, timeout: int) -> tuple[Any, str]:
@@ -332,7 +321,10 @@ def _source_rows(rows: list[dict]) -> list[dict]:
         else:
             continue
         url = strip_call_fragment(str(citation.get("url") or citation.get("link") or ""))
-        parsed = urllib.parse.urlsplit(url)
+        try:
+            parsed = urllib.parse.urlsplit(url)
+        except ValueError:
+            continue
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or url in seen:
             continue
         seen.add(url)
@@ -351,9 +343,13 @@ def _response_sources(item: dict) -> list[dict]:
 
 
 def _json_endpoint(provider: dict, suffix: str) -> str:
-    base = provider["base_url"].rstrip("/")
-    if base.endswith(suffix):
-        return base
+    parsed = urllib.parse.urlsplit(provider['base_url'])
+    base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip('/'), '', ''))
+    if protocol(provider) == 'kimi':
+        for tail in ('/anthropic/v1/messages', '/anthropic/v1', '/anthropic'):
+            if base.endswith(tail):
+                base = base[:-len(tail)]
+                break
     for tail in ("/chat/completions", "/responses", "/tools/search", "/tools/search_pro", "/web_search"):
         if base.endswith(tail):
             base = base[:-len(tail)]
@@ -365,27 +361,51 @@ def _json_endpoint(provider: dict, suffix: str) -> str:
     return base + suffix
 
 
+def _structured_request(provider: dict, query: str, timeout: int) -> tuple[str, dict]:
+    """按官方搜索 API 构造白名单参数；不复用聊天模型或千问策略。"""
+    kind = protocol(provider)
+    path = urllib.parse.urlsplit(provider['base_url']).path.rstrip('/')
+    if '/coding/' in path + '/' or '/mcp' in path:
+        raise ValueError('当前地址属于 Coding Plan 或 MCP 接口，请填写该供应商独立搜索 API 的 Base URL，并使用对应搜索服务的密钥。')
+    if not query.strip():
+        raise ValueError('搜索词不能为空')
+    rule = capabilities.CATALOG['providers'][kind]
+    if kind == 'kimi':
+        pro = path.endswith('/tools/search_pro')
+        suffix = '/tools/search_pro' if pro else '/tools/search'
+        body = {'text_query': query, 'limit': rule['limit'],
+                'timeout_seconds': max(1, min(int(timeout), rule['timeout_max']))}
+        if not pro:
+            body['include_content'] = True
+        return _json_endpoint(provider, suffix), body
+    international = capabilities.glm_international(provider)
+    options = rule['international'] if international else rule['domestic']
+    if 'query_max' in options and len(query) > options['query_max']:
+        raise ValueError(f"智谱国内搜索词最多 {options['query_max']} 个字符，请缩短查询后重试")
+    body = {'search_query': query, 'search_engine': options['engine']}
+    if not international:
+        body.update(search_intent=False, count=6, content_size='high')
+    return _json_endpoint(provider, '/web_search'), body
+
+
+def _upstream_error(payload: dict) -> str:
+    error = payload.get('error')
+    if isinstance(error, dict):
+        return str(error.get('message') or error.get('code') or error)
+    if error:
+        return str(error)
+    if payload.get('code') and payload.get('message'):
+        return f"{payload['code']}：{payload['message']}"
+    return ''
+
+
 def _dashscope_endpoint(provider: dict) -> str:
     """按模型类型返回 DashScope 文本或多模态 Generation API 地址。"""
-    base = provider["base_url"].rstrip("/")
-    service_tails = (
-        "/services/aigc/text-generation/generation",
-        "/services/aigc/multimodal-generation/generation",
-    )
-    for service_tail in service_tails:
-        if base.endswith(service_tail):
-            base = base[:-len(service_tail)]
-            break
-    for tail in ("/chat/completions", "/responses", "/compatible-mode/v1", "/compatible-mode", "/api/v1", "/v1"):
-        if base.endswith(tail):
-            base = base[:-len(tail)]
-            break
-    return base + "/api/v1" + _dashscope_service_tail(provider)
+    return capabilities.endpoint(provider, 'dashscope')
 
 
 def _dashscope_is_multimodal(provider: dict) -> bool:
-    model = str(provider.get("model") or "").lower().replace("_", "-")
-    return any(marker in model for marker in ("qwen3.5", "qwen3.6", "qwen3.7", "qwen3.8"))
+    return bool((capabilities.model_rule(provider.get('model', '')) or {}).get('multimodal'))
 
 
 def _dashscope_service_tail(provider: dict) -> str:
@@ -395,7 +415,7 @@ def _dashscope_service_tail(provider: dict) -> str:
 
 def _dashscope_host_supported(provider: dict) -> bool:
     host = (urllib.parse.urlsplit(provider["base_url"]).hostname or "").lower()
-    return host == "dashscope.aliyuncs.com" or host.endswith(".maas.aliyuncs.com")
+    return host in {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com", "dashscope-us.aliyuncs.com"} or host.endswith(".maas.aliyuncs.com")
 
 
 def _dashscope_body(provider: dict, query: str) -> dict:
@@ -404,26 +424,31 @@ def _dashscope_body(provider: dict, query: str) -> dict:
         "你是检索助手。使用联网搜索核实信息，然后用中文简洁作答。"
         "必须在末尾列出引用页面的标题与完整 URL，不要编造来源。\n\n"
     )
-    search_strategy = "agent" if "omni" in str(provider.get("model") or "").lower() else "max"
-    return {
+    search_strategy = capabilities.resolve_strategy(provider)
+    search_options = {"search_strategy": search_strategy, "enable_source": True}
+    if search_strategy not in {'agent', 'agent_max'}:
+        search_options['forced_search'] = True
+    parameters = {
+        'enable_search': True, 'search_options': search_options,
+        'stream': True, 'incremental_output': True,
+        'max_tokens': provider['max_output_tokens'],
+    }
+    if search_strategy == 'agent_max':
+        parameters['enable_thinking'] = True
+    if 'omni' in provider['model'].lower():
+        parameters['modalities'] = ['text']
+    if not multimodal:
+        parameters['result_format'] = 'message'
+    body = {
         "model": provider["model"],
         "input": {"messages": [
             {"role": "user", "content": (
                 [{"text": instruction + query}] if multimodal else instruction + query
             )},
         ]},
-        "parameters": {
-            "enable_search": True,
-            "search_options": {
-                "forced_search": True,
-                "search_strategy": search_strategy,
-                "enable_source": True,
-            },
-            "result_format": "message",
-            "stream": True,
-            "incremental_output": True,
-        },
+        "parameters": parameters,
     }
+    return body
 
 
 def _dashscope_text(value: Any) -> str:
@@ -481,7 +506,7 @@ def _dashscope_search_rows(payload: dict) -> list[dict]:
 
 def _search_dashscope(provider: dict, query: str, timeout: int):
     """调用千问 DashScope 原生文本或多模态 Generation API 联网搜索。"""
-    endpoint = _dashscope_endpoint(provider)
+    endpoint = capabilities.endpoint(provider)
     yield {"type": "progress", "action": "search", "queries": [query], "url": ""}
     if not _dashscope_host_supported(provider):
         yield {
@@ -508,8 +533,12 @@ def _search_dashscope(provider: dict, query: str, timeout: int):
     text_parts: list[str] = []
     rows: list[dict] = []
     usage: dict[str, Any] = {}
+    failure = ''
     try:
         for payload in _iter_dashscope(response):
+            if payload.get('code') or payload.get('error'):
+                failure = str(payload.get('message') or payload.get('error') or payload['code'])
+                break
             output = payload.get("output") or {}
             choices = output.get("choices") or payload.get("choices") or []
             if choices:
@@ -521,13 +550,20 @@ def _search_dashscope(provider: dict, query: str, timeout: int):
                 ))
             rows.extend(_dashscope_search_rows(payload))
             usage = payload.get("usage") or usage
+    except Exception as error:
+        failure = f'搜索响应读取失败：{error}'
     finally:
         response.close()
+
+    if failure:
+        yield {'type': 'error', 'message': failure, 'status': 0}
+        return
 
     sources = _source_rows(rows)
     text = "".join(text_parts).strip()
     if not sources:
-        yield {"type": "error", "message": "DashScope 已返回内容，但没有返回可验证的搜索来源", "status": 0}
+        message = 'DashScope 已返回内容，但没有返回可验证的搜索来源；请检查当前地域是否支持该模型与策略。'
+        yield {"type": "error", "message": message, "status": 0}
         return
     if not text:
         text = "\n\n".join(
@@ -545,34 +581,32 @@ def _search_dashscope(provider: dict, query: str, timeout: int):
 
 def _search_structured(provider: dict, query: str, timeout: int):
     kind = protocol(provider)
-    yield {"type": "progress", "action": "search", "queries": [query], "url": ""}
-    if kind == "kimi":
-        endpoint = _json_endpoint(provider, "/tools/search")
-        body = {"text_query": query, "limit": 6, "include_content": True,
-                "timeout_seconds": min(timeout, 60)}
-    else:
-        endpoint = _json_endpoint(provider, "/web_search")
-        if len(query) > 70:
-            yield {"type": "error", "message": "GLM 搜索词最多 70 个字符，请缩短查询后重试", "status": 0}
-            return
-        body = {"search_query": query, "search_engine": "search_pro", "search_intent": False,
-                "count": 6, "content_size": "high"}
     try:
+        endpoint, body = _structured_request(provider, query, timeout)
+        yield {"type": "progress", "action": "search", "queries": [query], "url": ""}
         with _post_to(endpoint, provider, body, timeout) as response:
             payload = json.load(response)
-        if payload.get("error"):
-            raise ValueError(str(payload["error"].get("message") or payload["error"]))
-        rows = payload.get("search_results" if kind == "kimi" else "search_result") or []
+        if not isinstance(payload, dict):
+            raise ValueError('搜索接口返回了无效响应：预期为 JSON 对象')
+        if error := _upstream_error(payload):
+            raise ValueError(error)
+        rows = payload.get(capabilities.CATALOG['providers'][kind]['result_key'])
+        if not isinstance(rows, list):
+            raise ValueError('搜索接口缺少官方协议的结果数组，请检查 Base URL 是否指向独立搜索 API')
         sources = _source_rows(rows)
         if not sources:
             yield {"type": "error", "message": "搜索接口未返回网页结果，请更换查询词", "status": 0}
             return
         blocks = []
+        urls = {source['url'] for source in sources}
         for row in rows:
-            url = row.get("url") or row.get("link") or ""
-            if url not in {s["url"] for s in sources}:
+            if not isinstance(row, dict):
                 continue
-            text = row.get("text") or row.get("content") or row.get("snippet") or ""
+            url = row.get("url") or row.get("link") or ""
+            if strip_call_fragment(url) not in urls:
+                continue
+            chunks = '\n'.join(str(chunk.get('text') or '') for chunk in (row.get('chunks') or []) if isinstance(chunk, dict))
+            text = str(row.get("text") or chunks or row.get("content") or row.get("snippet") or "")
             blocks.append(f"标题：{row.get('title') or url}\n链接：{url}\n内容：{text[:3500]}")
         # 搜索正文属于不可信网页数据，主模型应只把它作为资料。
         text = "\n\n".join(blocks)[:provider["max_output_tokens"] * 3]
@@ -761,15 +795,28 @@ def search(provider: dict, query: str, timeout: int = REQUEST_TIMEOUT_SECONDS):
     """按配置选择官方协议，DeepSeek 官方不再提供内置搜索，禁止误报成功。"""
     provider = normalize_provider(provider)
     kind = protocol(provider)
-    if kind == "deepseek" and urllib.parse.urlsplit(provider["base_url"]).hostname == "api.deepseek.com":
+    try:
+        url = urllib.parse.urlsplit(provider['base_url'])
+        if url.scheme not in {'https', 'http'} or not url.hostname:
+            raise ValueError('请填写有效的 HTTP/HTTPS API 地址')
+    except ValueError as error:
+        yield {'type': 'error', 'status': 0, 'message': str(error)}
+        return
+    if capabilities.official_deepseek(provider['base_url']):
         yield {"type": "error", "status": 0, "message": (
             "DeepSeek 官方当前不支持内置联网搜索（Responses 的 web_search 会被忽略）。"
             "请在联网搜索设置中选择千问、Kimi 或 GLM 搜索服务；聊天仍可使用 DeepSeek。"
         )}
         return
     if kind == "qwen":
-        yield from _search_dashscope(provider, query, timeout)
-        return
+        if not capabilities.model_rule(provider['model']):
+            yield {'type': 'error', 'status': 0, 'message': (
+                f"官方联网文档未列出模型 {provider['model']}（或该快照早于支持日期）。"
+                '请选择模型列表中的搜索型号；Realtime 型号需要实时接口，不适用于此处。')}
+            return
+        if capabilities.resolve_api(provider) != 'responses':
+            yield from _search_dashscope(provider, query, timeout)
+            return
     if kind in {"kimi", "glm"}:
         yield from _search_structured(provider, query, timeout)
         return
@@ -811,10 +858,6 @@ def test_provider(provider: dict) -> dict:
     elapsed = timer.elapsed_ms()
     if error or not result:
         message = (error or {}).get("message") or "搜索没有返回结论"
-        if progress == 0 and not (error or {}).get("status"):
-            # 请求本身通过了，却一次搜索都没发起：多半是这个上游根本不支持
-            # 服务端内置的 web_search，光看报错文字看不出这一层。
-            message += "（上游一次搜索都没执行，多半不支持内置 web_search）"
         return {
             "ok": False, "status": "error", "message": message,
             "http_status": (error or {}).get("status") or 0,

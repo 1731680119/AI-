@@ -80,7 +80,7 @@ hiddenimports = [
 ]
 
 # python-pptx 会读自带的默认模板和一批 XML 资源，纯 hiddenimports 带不进来。
-datas = collect_data_files("pptx")
+datas = collect_data_files("pptx") + [("search_capabilities.json", ".")]
 # pillow-heif 的 libheif / aom 等动态库放在包目录里，同样得整包捞进来，
 # 否则打出来的 exe 一导出 HEIC/AVIF 就报找不到编码器。
 binaries = collect_dynamic_libs("pillow_heif")

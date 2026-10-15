@@ -31,6 +31,8 @@ export function testSearchProvider(provider: SearchProvider): Promise<SearchTest
       api_key: provider.api_key,
       model: provider.model,
       max_output_tokens: provider.max_output_tokens,
+      api_type: provider.api_type,
+      search_strategy: provider.search_strategy,
     }),
   })
 }
@@ -41,11 +43,11 @@ export function testSearchProvider(provider: SearchProvider): Promise<SearchTest
  * 和检测搜索配置一样传字段而不是读设置：聊天、图片、搜索三处各有各的
  * 地址和密钥，而且常常是刚粘上地址、还没保存就想看有哪些模型能用。
  */
-export function listRemoteModels(baseUrl: string, apiKey: string): Promise<ModelListResult> {
+export function listRemoteModels(baseUrl: string, apiKey: string, protocol = '', apiType = 'auto'): Promise<ModelListResult> {
   return requestJson('/settings/model-list', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ base_url: baseUrl, api_key: apiKey }),
+    body: JSON.stringify({ base_url: baseUrl, api_key: apiKey, protocol, api_type: apiType }),
   })
 }
 

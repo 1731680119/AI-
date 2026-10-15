@@ -16,6 +16,11 @@ import { MemoryPanel } from './MemoryPanel'
 import { ModelPicker } from './ModelPicker'
 import { UpdatePanel } from './UpdatePanel'
 import type { ModelSource } from './ModelPicker'
+import {
+  adaptSearchProvider, API_LABELS, STRATEGY_LABELS, searchProtocol,
+  officialSearchUnsupported, searchBasePlaceholder, structuredSearchHint,
+  searchApiTypes, searchApiType, searchStrategies, searchModelRule, searchEndpoint,
+} from '../searchCapabilities'
 
 /** 桌面端注入的「多 API」分区只在 Electron 里有意义，浏览器里不显示这一栏。 */
 const isDesktop = () => Boolean((window as unknown as { chatbotDesktop?: unknown }).chatbotDesktop)
@@ -92,6 +97,7 @@ export function SettingsModal() {
   // 正在检测的搜索配置 id，以及每套配置最近一次的检测结果。
   const [testingId, setTestingId] = useState('')
   const [testResults, setTestResults] = useState<Record<string, SearchTestResult>>({})
+  const providerVersions = useRef<Record<string, number>>({})
   // 当前展开的模型选择器。'chat' 是那一栏，搜索配置用它自己的 id。
   const [pickerFor, setPickerFor] = useState('')
   // 弹窗尺寸：null 表示用 CSS 里的默认大小。最大化和手动尺寸都不记忆，
@@ -200,10 +206,14 @@ export function SettingsModal() {
 
   // ---- 联网搜索的多套配置 ----
 
-  const patchProvider = (id: string, p: Partial<SearchProvider>) =>
+  const patchProvider = (id: string, p: Partial<SearchProvider>) => {
+    providerVersions.current[id] = (providerVersions.current[id] || 0) + 1
+    setTestResults((prev) => { const next = { ...prev }; delete next[id]; return next })
+    if ('protocol' in p || 'api_type' in p || 'base_url' in p || 'api_key' in p || 'model' in p) setPickerFor('')
     patch({
-      search_providers: draft.search_providers.map((s) => (s.id === id ? { ...s, ...p } : s)),
+      search_providers: draft.search_providers.map((s) => (s.id === id ? adaptSearchProvider({ ...s, ...p }) : s)),
     })
+  }
 
   const addProvider = () => {
     const id = `search-${Date.now().toString(36)}`
@@ -213,10 +223,12 @@ export function SettingsModal() {
         {
           id,
           name: '新搜索配置',
-          protocol: '',
+          protocol: 'qwen',
           base_url: '',
           api_key: '',
-          model: 'deepseek-v4-flash',
+          model: 'qwen-plus',
+          api_type: 'auto',
+          search_strategy: 'turbo',
           max_output_tokens: 4000,
         },
       ],
@@ -237,11 +249,14 @@ export function SettingsModal() {
 
   /** 用草稿里的配置真跑一次检索。不要求先保存，改完就能试。 */
   const runProviderTest = async (provider: SearchProvider) => {
+    const version = providerVersions.current[provider.id] || 0
     setTestingId(provider.id)
     try {
       const result = await testSearchProvider(provider)
+      if ((providerVersions.current[provider.id] || 0) !== version) return
       setTestResults((prev) => ({ ...prev, [provider.id]: result }))
     } catch (error) {
+      if ((providerVersions.current[provider.id] || 0) !== version) return
       setTestResults((prev) => ({
         ...prev,
         [provider.id]: {
@@ -589,6 +604,11 @@ export function SettingsModal() {
                 <label>搜索服务配置</label>
                 <div className="style-list-edit">
                   {draft.search_providers.map((p) => {
+                    p = adaptSearchProvider(p)
+                    const kind = searchProtocol(p)
+                    const structuredSearch = kind === 'kimi' || kind === 'glm'
+                    const unsupported = officialSearchUnsupported(p)
+                    const choices = searchStrategies(p)
                     const result = testResults[p.id]
                     const testing = testingId === p.id
                     return (
@@ -612,12 +632,12 @@ export function SettingsModal() {
                           />
                           <button
                             className="btn-ghost search-test-btn"
-                            disabled={!draft.tools_enabled || testing || !p.api_key.trim()}
-                            title={p.api_key.trim() ? '真跑一次检索，验证能不能联网' : '先填 API 密钥'}
+                            disabled={!draft.tools_enabled || Boolean(testingId) || !p.api_key.trim() || unsupported}
+                            title={unsupported ? 'DeepSeek 官方不支持内置联网搜索' : p.api_key.trim() ? '真跑一次检索，验证能不能联网' : '先填 API 密钥'}
                             onClick={() => runProviderTest(p)}
                           >
                             {testing ? <Loader2 size={13} className="spin" /> : <Globe size={13} />}
-                            {testing ? '检测中…' : '检测'}
+                            {testing ? '检测中…' : '检索测试'}
                           </button>
                           <button
                             className="icon-btn"
@@ -638,19 +658,17 @@ export function SettingsModal() {
                               onChange={(e) => patchProvider(p.id, { protocol: e.target.value as SearchProvider['protocol'] })}
                             >
                               <option value="">自动识别</option>
-                              <option value="qwen">千问 DashScope</option>
+                              <option value="qwen">千问（阿里云百炼）</option>
                               <option value="kimi">Kimi（Moonshot）</option>
-                              <option value="glm">GLM（智谱）</option>
-                              <option value="deepseek">DeepSeek Responses</option>
+                              <option value="glm">GLM（智谱 / Z.AI）</option>
+                              <option value="deepseek">兼容 Responses（中转站）</option>
                             </select>
                           </div>
                           <div className="field">
                             <label>API 地址（Base URL）</label>
                             <input
                               value={p.base_url}
-                              placeholder={p.protocol === 'qwen'
-                                ? 'https://<业务空间ID>.cn-beijing.maas.aliyuncs.com/api/v1'
-                                : 'https://api.deepseek.com'}
+                              placeholder={searchBasePlaceholder(p)}
                               disabled={!draft.tools_enabled}
                               onChange={(e) => patchProvider(p.id, { base_url: e.target.value })}
                             />
@@ -667,7 +685,7 @@ export function SettingsModal() {
                           </div>
                         </div>
 
-                        <div className="field-row">
+                        {!structuredSearch && !unsupported && <div className="field-row">
                           <div className="field">
                             <div className="field-head">
                               <label>搜索模型</label>
@@ -676,15 +694,15 @@ export function SettingsModal() {
                                 disabled={
                                   !draft.tools_enabled || !p.base_url.trim() || !p.api_key.trim()
                                 }
-                                title={p.api_key.trim() ? '读取这个上游的模型清单' : '先填地址和密钥'}
+                                title={p.api_key.trim() ? '读取模型清单并筛选支持联网搜索的型号' : '先填地址和密钥'}
                                 onClick={() => togglePicker(p.id)}
                               >
-                                <ListChecks size={13} /> {pickerFor === p.id ? '收起' : '检测'}
+                                <ListChecks size={13} /> {pickerFor === p.id ? '收起' : '获取模型'}
                               </button>
                             </div>
                             <input
                               value={p.model}
-                              placeholder="deepseek-v4-flash"
+                              placeholder={kind === 'qwen' ? 'qwen-plus' : '搜索模型名称'}
                               disabled={!draft.tools_enabled}
                               onChange={(e) => patchProvider(p.id, { model: e.target.value })}
                             />
@@ -700,11 +718,44 @@ export function SettingsModal() {
                               })}
                             />
                           </div>
-                        </div>
+                        </div>}
 
-                        {pickerFor === p.id && (
+                        {structuredSearch && <div className="hint">
+                          {structuredSearchHint(p)}
+                        </div>}
+
+                        {unsupported && <div className="hint">DeepSeek 官方不支持内置联网搜索，Responses 会忽略 web_search。请选择千问、Kimi 或 GLM 搜索服务。</div>}
+
+                        {kind === 'qwen' && !unsupported && <>
+                          <div className="field-row">
+                            <div className="field">
+                              <label>API 类型</label>
+                              <select value={p.api_type || 'auto'} disabled={!draft.tools_enabled}
+                                onChange={(e) => patchProvider(p.id, { api_type: e.target.value as SearchProvider['api_type'] })}>
+                                <option value="auto">{API_LABELS.auto}</option>
+                                {searchApiTypes(p.model).map(api => <option key={api} value={api}>{API_LABELS[api]}</option>)}
+                              </select>
+                            </div>
+                            {choices.length > 0 && <div className="field">
+                              <label>搜索策略</label>
+                              <select value={p.search_strategy} disabled={!draft.tools_enabled}
+                                onChange={(e) => patchProvider(p.id, { search_strategy: e.target.value as SearchProvider['search_strategy'] })}>
+                                {choices.map(choice => <option key={choice} value={choice}>{STRATEGY_LABELS[choice]}</option>)}
+                              </select>
+                            </div>}
+                          </div>
+                          <div className="hint">
+                            {!searchModelRule(p.model) ? '官方联网文档未列出此型号或快照，请获取模型并选择已支持的型号。'
+                              : searchApiType(p) === 'responses' ? 'Responses 使用 web_search 工具自主多轮检索，不发送 search_strategy 参数。'
+                                : `仅显示当前模型支持的策略。${p.search_strategy === 'agent_max' ? '已自动启用思考模式和流式输出。' : p.search_strategy === 'agent' ? '已自动使用流式输出并移除不兼容的强制搜索参数。' : '已自动开启联网、强制搜索和流式输出。'}`}
+                            {' OpenAI Chat Completions 无法返回搜索来源，此处仅提供可验证检索的 API 类型。'}
+                          </div>
+                          {searchModelRule(p.model) && searchEndpoint(p) && <div className="hint">实际请求接口：{searchEndpoint(p)}</div>}
+                        </>}
+
+                        {!structuredSearch && !unsupported && pickerFor === p.id && (
                           <ModelPicker
-                            sources={singleSource(p.id, p.name, p.base_url, p.api_key)}
+                            sources={singleSource(p.id, p.name, p.base_url, p.api_key).map(source => ({ ...source, protocol: kind, apiType: p.api_type || 'auto' }))}
                             selected={[p.model]}
                             onConfirm={(models) => patchProvider(p.id, { model: models[0] })}
                             onClose={() => setPickerFor('')}
@@ -745,13 +796,13 @@ export function SettingsModal() {
                 </div>
                 <div className="hint">
                   搜索走独立上游，与聊天接口无关，只有选中（左侧圆点）的那一套会被使用，
-                  失败时不会自动切到别的配置。千问使用 DashScope 原生搜索，Base URL 必须使用阿里云百炼业务空间地址（域名为 .maas.aliyuncs.com）；兼容中转站不支持返回搜索来源。Kimi、GLM 使用各自官方搜索接口；
-                  DeepSeek 官方 Responses 当前不会执行内置搜索。协议可自动识别，地址带不带 /v1 都行。
+                  失败时不会自动切到别的配置。千问优先使用 DashScope 原生搜索，可填写当前地域的原生或 OpenAI 兼容地址，程序会按模型和 API 类型调整实际路径及参数；兼容中转站不保证返回搜索来源。Kimi、GLM 使用各自官方搜索接口；
+                  DeepSeek 官方 Responses 当前不会执行内置搜索。模型清单仅用于选择，是否可检索需运行“检索测试”确认。
                 </div>
               </div>
               <div className="hint">
                 一次联网问答的输入量约为普通对话的十几倍，按量计费时请留意消耗；
-                「检测」按钮同样会真实发起一次检索。
+                「检索测试」按钮会真实发起一次检索；「获取模型」仅读取清单。
               </div>
             </section>
             <section className="settings-pane" hidden={section !== 'memory'}>

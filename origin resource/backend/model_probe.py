@@ -19,6 +19,7 @@ from typing import Any
 
 import logging_config as diag
 import model_params
+import search_capabilities
 
 
 REQUEST_TIMEOUT_SECONDS = 30
@@ -185,9 +186,16 @@ def _extract_ids(payload: Any) -> list[str]:
     return ids
 
 
-def list_models(base_url: str, api_key: str) -> dict:
+def list_models(base_url: str, api_key: str, protocol: str = '', api_type: str = 'auto') -> dict:
     """读取上游的模型清单。不发对话请求，所以不产生费用。"""
     timer = diag.Timer()
+    # protocol 非空代表搜索设置；普通聊天清单仍照常获取。
+    if protocol and (search_capabilities.official_deepseek(base_url) or protocol in {'kimi', 'glm'}):
+        message = ('DeepSeek 官方不支持内置联网搜索，请选择千问、Kimi 或 GLM。'
+                   if search_capabilities.official_deepseek(base_url)
+                   else '该供应商使用独立搜索 API，无需选择聊天模型，请运行“检索测试”。')
+        return {'ok': False, 'message': message, 'endpoint': '', 'models': [],
+                'elapsed_ms': 0, 'http_status': 0}
     diag.log_event(
         "INFO", "backend", "开始检测可用模型", logger="backend.model_probe",
         base_url=base_url, api_key=diag.mask_secret(api_key),
@@ -199,17 +207,32 @@ def list_models(base_url: str, api_key: str) -> dict:
         return {"ok": False, "message": "没有填 API 密钥", "endpoint": "",
                 "models": [], "elapsed_ms": 0, "http_status": 0}
 
+    def documented_fallback(reason: str) -> dict:
+        models = search_capabilities.recommended_models(api_type)
+        return {'ok': bool(models), 'message': reason + ' 以下为官方文档候选型号，未验证当前密钥/地域权限，请选好后运行“检索测试”。',
+                'endpoint': '官方联网搜索模型目录（非授权清单）', 'models': models,
+                'elapsed_ms': timer.elapsed_ms(), 'http_status': 0}
+
+    listing_base = (search_capabilities.base_root(base_url) + '/compatible-mode/v1'
+                    if protocol == 'qwen' else base_url)
     try:
-        payload, endpoint = _fetch(base_url, "models", api_key, None, REQUEST_TIMEOUT_SECONDS)
+        payload, endpoint = _fetch(listing_base, "models", api_key, None, REQUEST_TIMEOUT_SECONDS)
     except ProbeError as error:
         diag.log_event(
             "WARNING", "backend", "检测可用模型失败", logger="backend.model_probe",
             status=error.status, detail=str(error), elapsed_ms=timer.elapsed_ms(),
         )
+        if protocol == 'qwen' and error.status in {0, 404, 405, 501}:
+            return documented_fallback('当前接口未提供可读取的模型清单。')
         return {"ok": False, "message": str(error), "endpoint": "",
                 "models": [], "elapsed_ms": timer.elapsed_ms(), "http_status": error.status}
 
     models = _extract_ids(payload)
+    if protocol == 'qwen':
+        models = [m for m in models if search_capabilities.model_rule(m)
+                  and (api_type == 'auto' or api_type in search_capabilities.api_types(m))]
+        if not models:
+            return documented_fallback('接口返回的清单中没有已确认支持当前搜索 API 的型号。')
     elapsed = timer.elapsed_ms()
     diag.log_event(
         "INFO", "backend", "检测可用模型完成", logger="backend.model_probe",

@@ -9,7 +9,9 @@ const built = await build({
   stdin: { contents: `export { useStore } from './src/store/useAppStore';
     export { streamChat } from './src/services/api/chat';
     export { errorMessage } from './src/services/api/http';
-    export { activePathOf } from './src/features/chat/exportConversation';`,
+    export { activePathOf } from './src/features/chat/exportConversation';
+    export * from './src/features/settings/searchCapabilities';
+    export { testSearchProvider, listRemoteModels } from './src/services/api/settings';`,
     resolveDir: process.cwd(), loader: 'ts' },
   bundle: true, platform: 'node', format: 'cjs', write: false,
   plugins: [{ name: 'quiet-diagnostics', setup(b) {
@@ -21,6 +23,8 @@ const built = await build({
 const module = { exports: {} }
 new Function('module', 'exports', built.outputFiles[0].text)(module, module.exports)
 const { useStore, streamChat, activePathOf, errorMessage } = module.exports
+const { adaptSearchProvider, searchStrategies, searchApiTypes, searchEndpoint, testSearchProvider, listRemoteModels } = module.exports
+const { searchProtocol, officialSearchUnsupported, searchBasePlaceholder, structuredSearchHint } = module.exports
 const state = () => useStore.getState()
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status })
 const tree = (id, messages = [], active_leaf_id = null) => ({ id, title: id, messages, active_leaf_id })
@@ -29,6 +33,46 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a, b)
 const tick = () => new Promise((resolve) => setImmediate(resolve))
 const event = (data) => new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`)
 let calls
+test('搜索模型和 API 切换仅显示支持的策略并替换旧策略', () => {
+  const p = { protocol: 'qwen', model: 'qwen3.8-max', base_url: 'https://space.cn-beijing.maas.aliyuncs.com/api/v1', search_strategy: 'agent' }
+  assert.deepEqual(searchStrategies(p), ['turbo', 'max'])
+  assert.equal(adaptSearchProvider(p).search_strategy, 'turbo')
+  assert.deepEqual(searchStrategies({ ...p, model: 'qwen3.5-omni-plus' }), ['agent'])
+  assert.equal(adaptSearchProvider({ ...p, model: 'qwen3.5-omni-plus', search_strategy: 'max' }).search_strategy, 'agent')
+  assert.deepEqual(searchStrategies({ ...p, api_type: 'responses' }), [])
+  assert.deepEqual(searchApiTypes('kimi-k3'), ['responses'])
+  assert.deepEqual(searchStrategies({ ...p, model: 'qwen3.7-flash-2026-06-01' }), [])
+  assert.equal(searchEndpoint({ ...p, model: 'qwen3.7-max' }), 'https://space.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/text-generation/generation')
+})
+
+test('搜索检测和模型清单请求保留 API 类型和策略', async () => {
+  globalThis.fetch = async (url, init) => { calls.push([url, init]); return json({ ok: true, models: [] }) }
+  await testSearchProvider({ protocol: 'qwen', model: 'qwen3.5-plus', api_type: 'dashscope', search_strategy: 'agent_max' })
+  assert.equal(JSON.parse(calls[0][1].body).search_strategy, 'agent_max')
+  assert.equal(JSON.parse(calls[0][1].body).api_type, 'dashscope')
+  await listRemoteModels('https://example.org/api/v1', 'test-key', 'qwen', 'responses')
+  assert.equal(JSON.parse(calls[1][1].body).protocol, 'qwen')
+  assert.equal(JSON.parse(calls[1][1].body).api_type, 'responses')
+})
+
+test('搜索协议按官方域名识别，名称不覆盖供应商且尊重显式协议', () => {
+  for (const [host, protocol] of [['api.z.ai', 'glm'], ['api.moonshot.ai', 'kimi'], ['api.deepseek.com', 'deepseek'], ['dashscope.aliyuncs.com', 'qwen']]) {
+    assert.equal(searchProtocol({ name: '千问 Kimi GLM', base_url: 'https://' + host }), protocol)
+  }
+  assert.equal(searchProtocol({ protocol: 'kimi', base_url: 'https://api.z.ai' }), 'kimi')
+  assert.equal(officialSearchUnsupported({ protocol: 'qwen', base_url: 'https://api.deepseek.com/v1' }), true)
+  assert.equal(officialSearchUnsupported({ base_url: 'https://api.deepseek.com.relay.example' }), false)
+})
+
+test('独立搜索说明和地址提示区分 Kimi Basic/Pro、智谱国内与国际站', () => {
+  assert.match(searchBasePlaceholder({ protocol: 'kimi' }), /moonshot.cn\/v1/)
+  assert.match(searchBasePlaceholder({ protocol: 'glm' }), /bigmodel.cn/)
+  assert.match(structuredSearchHint({ protocol: 'glm', base_url: 'https://api.z.ai' }), /search-prime/)
+  assert.doesNotMatch(structuredSearchHint({ protocol: 'glm', base_url: 'https://api.z.ai' }), /70/)
+  assert.match(structuredSearchHint({ protocol: 'glm', base_url: 'https://open.bigmodel.cn' }), /search_pro.*70/)
+  assert.match(structuredSearchHint({ protocol: 'kimi', base_url: 'https://api.moonshot.cn/v1' }), /Basic/)
+  assert.match(structuredSearchHint({ protocol: 'kimi', base_url: 'https://api.moonshot.cn/v1/tools/search_pro?unused=1' }), /Pro/)
+})
 beforeEach(() => {
   globalThis.document = { documentElement: { dataset: {} } }
   useStore.setState(useStore.getInitialState(), true)

@@ -173,6 +173,8 @@ export interface SearchProvider {
   /** 显示用的名字，例如「DeepSeek 官方」「某中转站」。 */
   name: string
   protocol?: 'deepseek' | 'qwen' | 'kimi' | 'glm' | ''
+  api_type?: 'auto' | 'dashscope' | 'chat_completions' | 'responses'
+  search_strategy?: 'turbo' | 'max' | 'agent' | 'agent_max' | ''
   base_url: string
   api_key: string
   model: string
