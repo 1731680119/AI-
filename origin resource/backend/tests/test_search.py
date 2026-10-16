@@ -139,6 +139,63 @@ class SearchRegression(unittest.TestCase):
         self.assertEqual(result['text'], 'answer')
         self.assertEqual(result['sources'][0]['host'], 'example.org')
 
+    def test_dashscope_retries_transient_response_read_error_once(self):
+        class BrokenResponse:
+            def __iter__(self):
+                raise FileNotFoundError(2, 'No such file or directory')
+            def close(self):
+                self.closed = True
+
+        good = sse({'output': {'search_info': {'search_results': [{'url': 'https://example.org', 'title': 'source'}]}}},
+                   {'output': {'choices': [{'message': {'content': [{'text': 'answer'}]}}]}})
+        with patch.object(ws, '_post_to', side_effect=[BrokenResponse(), good]) as post:
+            result = ws.test_provider(provider('qwen3.5-plus', search_strategy='agent'))
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['text'], 'answer')
+        self.assertEqual(post.call_count, 2)
+
+    def test_dashscope_does_not_retry_upstream_parameter_errors(self):
+        with patch.object(ws, '_post_to', side_effect=ValueError('unsupported parameter')) as post:
+            result = ws.test_provider(provider('qwen3.5-plus', search_strategy='agent'))
+        self.assertFalse(result['ok'])
+        self.assertIn('unsupported parameter', result['message'])
+        post.assert_called_once()
+
+    def test_dashscope_read_retry_discards_partial_results_and_is_bounded(self):
+        class BrokenResponse:
+            closed = False
+            def __iter__(self):
+                yield b'data: {"output":{"choices":[{"message":{"content":"old partial"}}]}}\n'
+                raise FileNotFoundError(2, 'No such file or directory')
+            def close(self):
+                self.closed = True
+        broken = BrokenResponse()
+        good = sse({'output': {'choices': [{'message': {'content': 'new answer'}}],
+                               'search_info': {'search_results': [{'url': 'https://example.org'}]}}})
+        with patch.object(ws, '_post_to', side_effect=[broken, good]) as post:
+            result = ws.test_provider(provider('qwen3.7-plus', search_strategy='agent'))
+        self.assertEqual(result['text'], 'new answer')
+        self.assertEqual(post.call_count, 2)
+        self.assertTrue(broken.closed)
+        failures = [BrokenResponse(), BrokenResponse()]
+        with patch.object(ws, '_post_to', side_effect=failures) as post:
+            result = ws.test_provider(provider('qwen3.7-plus', search_strategy='agent'))
+        self.assertFalse(result['ok'])
+        self.assertIn('重连一次后仍失败', result['message'])
+        self.assertEqual(post.call_count, 2)
+        self.assertTrue(all(response.closed for response in failures))
+
+    def test_dashscope_connect_auth_and_rate_limit_errors_never_retry(self):
+        for error in [FileNotFoundError(2, 'missing file'),
+                      *[urllib.error.HTTPError('mock', code, 'mock', {}, io.BytesIO(b'upstream error'))
+                        for code in (400, 401, 403, 429)]]:
+            with patch.object(ws, '_post_to', side_effect=error) as post:
+                result = ws.test_provider(provider())
+            self.assertFalse(result['ok'])
+            post.assert_called_once()
+            if isinstance(error, urllib.error.HTTPError):
+                self.assertEqual(result['http_status'], error.code)
+
     def test_responses_stream_extracts_official_action_sources(self):
         output = [{'type': 'web_search_call', 'action': {'sources': [{'url': 'https://example.org'}]}},
                   {'type': 'message', 'content': [{'type': 'output_text', 'text': 'answer'}]}]

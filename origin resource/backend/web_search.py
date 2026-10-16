@@ -4,6 +4,8 @@
 web_search，故明确拒绝。中转 Responses 需通过来源验证，失败不切换供应商。
 """
 import json
+import errno
+from http.client import IncompleteRead
 import re
 import urllib.error
 import urllib.parse
@@ -148,6 +150,15 @@ _PATH_MISMATCH_CODES = {403, 404, 405, 501}
 
 # 浏览器味的 UA。默认的 Python-urllib 会被一些中转站前面的 WAF 直接拦掉。
 _USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AI-Chatbot/1.0"
+
+
+def _retryable_response_error(error: BaseException) -> bool:
+    """限制为已收到响应后的读取异常；重连可能产生额外上游费用。"""
+    if isinstance(error, (FileNotFoundError, ConnectionError, TimeoutError, IncompleteRead)):
+        return True
+    return getattr(error, "errno", None) in {
+        errno.ENOENT, errno.ECONNRESET, errno.ETIMEDOUT, errno.EPIPE,
+    }
 
 # 记住每个 base_url 上一次成功的完整地址，省掉之后每次搜索都先撞一次 404。
 # 进程内缓存即可，设置改了会换 key，重启后重新探一次也不算贵。
@@ -520,43 +531,68 @@ def _search_dashscope(provider: dict, query: str, timeout: int):
             ),
         }
         return
-    try:
-        response = _post_to(endpoint, provider, _dashscope_body(provider, query), timeout)
-    except urllib.error.HTTPError as error:
-        detail = error.read(2048).decode("utf8", "replace")
-        yield {"type": "error", "message": f"DashScope 搜索接口 HTTP {error.code}：{detail}", "status": error.code}
-        return
-    except Exception as error:
-        yield {"type": "error", "message": str(error), "status": 0}
-        return
-
     text_parts: list[str] = []
     rows: list[dict] = []
     usage: dict[str, Any] = {}
     failure = ''
-    try:
-        for payload in _iter_dashscope(response):
-            if payload.get('code') or payload.get('error'):
-                failure = str(payload.get('message') or payload.get('error') or payload['code'])
-                break
-            output = payload.get("output") or {}
-            choices = output.get("choices") or payload.get("choices") or []
-            if choices:
-                choice = choices[0] or {}
-                message = choice.get("message") or {}
-                delta = choice.get("delta") or {}
-                text_parts.append(_dashscope_text(
-                    message.get("content") or delta.get("content") or choice.get("text")
-                ))
-            rows.extend(_dashscope_search_rows(payload))
-            usage = payload.get("usage") or usage
-    except Exception as error:
-        failure = f'搜索响应读取失败：{error}'
-    finally:
-        response.close()
+    failure_status = 0
+    # 只重试响应读取异常；HTTP 拒绝或连接建立失败不重新提交搜索。
+    for attempt in range(2):
+        text_parts = []
+        rows = []
+        usage = {}
+        failure = ''
+        failure_status = 0
+        response = None
+        try:
+            response = _post_to(endpoint, provider, _dashscope_body(provider, query), timeout)
+            for payload in _iter_dashscope(response):
+                if payload.get('code') or payload.get('error'):
+                    failure = str(payload.get('message') or payload.get('error') or payload['code'])
+                    break
+                output = payload.get("output") or {}
+                choices = output.get("choices") or payload.get("choices") or []
+                if choices:
+                    choice = choices[0] or {}
+                    message = choice.get("message") or {}
+                    delta = choice.get("delta") or {}
+                    text_parts.append(_dashscope_text(
+                        message.get("content") or delta.get("content") or choice.get("text")
+                    ))
+                rows.extend(_dashscope_search_rows(payload))
+                usage = payload.get("usage") or usage
+        except urllib.error.HTTPError as error:
+            detail = error.read(2048).decode("utf8", "replace")
+            failure = f"DashScope 搜索接口 HTTP {error.code}：{detail}"
+            failure_status = error.code
+        except Exception as error:
+            failure = f'搜索响应读取失败：{error}'
+            diag.log_exception(
+                "backend.web_search", "DashScope 搜索响应异常", error,
+                endpoint=endpoint, model=provider['model'],
+                search_strategy=capabilities.resolve_strategy(provider),
+                attempt=attempt + 1, stage='read' if response is not None else 'connect',
+                received_chars=sum(len(part) for part in text_parts), source_rows=len(rows),
+            )
+            if response is not None and attempt == 0 and _retryable_response_error(error):
+                diag.log_event(
+                    "WARNING", "backend", "联网搜索响应流中断，正在重试一次",
+                    logger="backend.web_search", endpoint=endpoint,
+                    error_type=type(error).__name__, error=str(error),
+                )
+                continue
+            if response is not None and _retryable_response_error(error):
+                failure = f'搜索连接在读取响应时中断，自动重连一次后仍失败，请稍后重试。原始错误：{error}'
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except OSError:
+                    pass
+        break
 
     if failure:
-        yield {'type': 'error', 'message': failure, 'status': 0}
+        yield {'type': 'error', 'message': failure, 'status': failure_status}
         return
 
     sources = _source_rows(rows)
