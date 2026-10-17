@@ -240,7 +240,7 @@
   margin: 8px 0 12px;
 }
 .tool-image-card { margin: 0; min-width: 0; }
-.tool-image-card > a { display: block; height: 120px; background: var(--bg-hover); border-radius: 7px; overflow: hidden; }
+.tool-image-card > .tool-image-open { display: block; width: 100%; height: 120px; padding: 0; border: 0; background: var(--bg-hover); border-radius: 7px; overflow: hidden; cursor: zoom-in; }
 .tool-image-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .tool-image-failed { display: grid; place-items: center; height: 100%; color: var(--text-muted); font-size: 12px; }
 .tool-image-card figcaption { display: flex; gap: 6px; align-items: center; margin-top: 5px; font-size: 11px; }
@@ -410,6 +410,22 @@
 .md hr { border: none; border-top: 1px solid var(--border); margin: 1.2em 0; }
 .md a { color: var(--accent); }
 .md img { max-width: 100%; border-radius: 8px; }
+.md-image-open { display: inline-block; max-width: 100%; padding: 0; border: 0; background: transparent; cursor: zoom-in; vertical-align: middle; }
+.md-image-open img { display: block; }
+
+.chat-image-overlay { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, .82); }
+.chat-image-viewer { width: min(1200px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--text); box-shadow: 0 20px 60px rgba(0, 0, 0, .35); }
+.chat-image-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.chat-image-toolbar > span { flex: 1 1 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.chat-image-toolbar button, .chat-image-toolbar a { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-hover); color: var(--text); font: inherit; font-size: 12px; text-decoration: none; cursor: pointer; }
+.chat-image-toolbar button:hover:not(:disabled), .chat-image-toolbar a:hover { color: var(--accent); border-color: var(--accent); }
+.chat-image-toolbar button:disabled { opacity: .5; cursor: wait; }
+.chat-image-toolbar .chat-image-close { padding: 5px; }
+.chat-image-stage { min-height: 120px; overflow: auto; display: grid; place-items: center; padding: 16px; }
+.chat-image-stage img { display: block; max-width: 100%; max-height: calc(100vh - 155px); object-fit: contain; }
+.chat-image-status { display: flex; align-items: center; gap: 5px; padding: 8px 14px; color: var(--accent); font-size: 12px; }
+.chat-image-status.error { color: var(--danger, #dc5555); }
+@media (max-width: 720px) { .chat-image-overlay { padding: 8px; } .chat-image-toolbar > span { flex-basis: 100%; } .chat-image-stage img { max-height: calc(100vh - 210px); } }
 
 /* ============ 数学公式（KaTeX） ============
  * 采用 DeepSeek 聊天端常见的排版：行内公式与正文自然衔接，独立公式

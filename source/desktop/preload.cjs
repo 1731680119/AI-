@@ -38,6 +38,8 @@ contextBridge.exposeInMainWorld('chatbotDesktop', {
   exportDiagnosticsBundle: () => ipcRenderer.invoke('desktop:diagnostics-export-bundle'),
   copyToClipboard: (text) => ipcRenderer.invoke('desktop:diagnostics-copy', text),
   saveBinaryFile: (payload) => ipcRenderer.invoke('desktop:save-binary', payload),
+  readImage: (url) => ipcRenderer.invoke('desktop:read-image', url),
+  copyImage: (data) => ipcRenderer.invoke('desktop:copy-image', data),
   getUpdateState: () => ipcRenderer.invoke('desktop:update-state'),
   checkForUpdate: () => ipcRenderer.invoke('desktop:update-check'),
   downloadUpdate: () => ipcRenderer.invoke('desktop:update-download'),

@@ -3,6 +3,7 @@ import {
   AlertCircle, Brain, ChevronDown, ExternalLink, Globe, Loader2, Search, Terminal,
 } from 'lucide-react'
 import type { SearchImage, ToolCall } from '../../../types'
+import { ImageViewer } from './ImageViewer'
 
 const TOOL_LABELS: Record<string, string> = {
   web_search: '联网搜索',
@@ -86,10 +87,11 @@ function CodeExecBody({ call }: { call: ToolCall }) {
 
 function ToolImageCard({ image }: { image: SearchImage }) {
   const [failed, setFailed] = useState(false)
+  const [open, setOpen] = useState(false)
   const [src, setSrc] = useState(image.thumbnail || image.url)
   return (
     <figure className="tool-image-card">
-      <a href={image.url} target="_blank" rel="noreferrer noopener">
+      <button className="tool-image-open" type="button" onClick={() => setOpen(true)} title="点击查看图片">
         {failed ? (
           <span className="tool-image-failed">图片加载失败</span>
         ) : (
@@ -99,11 +101,12 @@ function ToolImageCard({ image }: { image: SearchImage }) {
               else setFailed(true)
             }} />
         )}
-      </a>
+      </button>
       <figcaption>
         <span title={image.title}>{image.title}</span>
         <a href={image.source_url} target="_blank" rel="noreferrer noopener">查看来源</a>
       </figcaption>
+      {open && <ImageViewer src={image.url} alt={image.title} sourceUrl={image.source_url} onClose={() => setOpen(false)} />}
     </figure>
   )
 }

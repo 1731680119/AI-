@@ -7,6 +7,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { Check, Copy, Download, FileCode2 } from 'lucide-react'
 import { useStore } from '../../../store'
+import { ImageViewer } from './ImageViewer'
 import { ARTIFACT_LANGS, artifactTitle, versionIdOf } from '../../artifacts/artifactVersions'
 import 'katex/dist/katex.min.css'
 
@@ -30,8 +31,14 @@ function CopyButton({ text }: { text: string }) {
 
 function RemoteImage({ src, alt }: { src?: string; alt?: string }) {
   const [failed, setFailed] = useState(false)
+  const [open, setOpen] = useState(false)
   if (!src || failed) return <span className="md-image-failed">图片加载失败{alt ? `：${alt}` : ''}</span>
-  return <img src={src} alt={alt || ''} loading="lazy" onError={() => setFailed(true)} />
+  return <>
+    <button className="md-image-open" type="button" onClick={() => setOpen(true)} title="点击查看图片">
+      <img src={src} alt={alt || ''} loading="lazy" onError={() => setFailed(true)} />
+    </button>
+    {open && <ImageViewer src={src} alt={alt} onClose={() => setOpen(false)} />}
+  </>
 }
 
 function CodeBlock({ language, code, versionId }: { language: string; code: string; versionId?: string }) {

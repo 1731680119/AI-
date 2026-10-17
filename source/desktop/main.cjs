@@ -6,6 +6,8 @@ const {
   dialog,
   ipcMain,
   Menu,
+  nativeImage,
+  net: electronNet,
   // safeStorage 只在 migrateSettingsLocation 里用一次：把旧版 DPAPI 密文解回明文。
   safeStorage,
   shell,
@@ -1113,6 +1115,40 @@ ipcMain.handle('desktop:diagnostics-open-archive-dir', async () => {
 })
 ipcMain.handle('desktop:diagnostics-copy', (event, text) => {
   clipboard.writeText(String(text ?? ''))
+  return true
+})
+
+/** 远程图片通常不允许页面跨域 fetch，由主进程读取供保存和复制使用。 */
+ipcMain.handle('desktop:read-image', async (_event, rawUrl) => {
+  const url = new URL(String(rawUrl || ''))
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('仅支持 HTTP/HTTPS 图片链接')
+  const response = await electronNet.fetch(url.href, { signal: AbortSignal.timeout(30000) })
+  if (!response.ok) throw new Error(`获取图片失败：HTTP ${response.status}`)
+  const mimeType = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
+  if (!mimeType.startsWith('image/')) throw new Error('图片地址没有返回图片文件')
+  const maxBytes = 30 * 1024 * 1024
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('图片响应为空')
+  const chunks = []
+  let size = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > maxBytes) throw new Error('图片超过 30 MB，无法复制或保存')
+      chunks.push(Buffer.from(value))
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  if (!size) throw new Error('图片文件为空')
+  return { data: Buffer.concat(chunks), mimeType }
+})
+ipcMain.handle('desktop:copy-image', (_event, data) => {
+  const image = nativeImage.createFromBuffer(Buffer.from(data))
+  if (image.isEmpty()) throw new Error('无法复制这张图片')
+  clipboard.writeImage(image)
   return true
 })
 
